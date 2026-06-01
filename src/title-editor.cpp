@@ -157,6 +157,25 @@ static void add_or_replace_keyframe(AnimatedProperty &prop, double time, double 
               [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
 }
 
+static void set_animated_value(AnimatedProperty &prop, double time, double value)
+{
+    if (prop.is_animated())
+        add_or_replace_keyframe(prop, time, value);
+    else
+        prop.static_value = value;
+}
+
+static void set_color_channels_at(Layer &layer, bool text, double time, uint32_t argb)
+{
+    auto &a = text ? layer.text_color_a : layer.fill_color_a;
+    auto &r = text ? layer.text_color_r : layer.fill_color_r;
+    auto &g = text ? layer.text_color_g : layer.fill_color_g;
+    auto &b = text ? layer.text_color_b : layer.fill_color_b;
+    set_animated_value(a, time, (argb >> 24) & 0xFF);
+    set_animated_value(r, time, (argb >> 16) & 0xFF);
+    set_animated_value(g, time, (argb >> 8) & 0xFF);
+    set_animated_value(b, time, argb & 0xFF);
+}
 
 static bool keyframe_at_time(const AnimatedProperty &prop, double time)
 {
@@ -798,19 +817,21 @@ void CanvasPreview::apply_drag(const QPointF &view_pt)
 
     QPointF canvas = view_to_canvas(view_pt);
     QPointF delta = canvas - drag_start_canvas_;
+    double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                           std::max(0.0, layer->out_time - layer->in_time));
 
     if (drag_mode_ == DragMode::Move) {
-        layer->pos_x.static_value = drag_start_x_ + delta.x();
-        layer->pos_y.static_value = drag_start_y_ + delta.y();
+        set_animated_value(layer->pos_x, lt, drag_start_x_ + delta.x());
+        set_animated_value(layer->pos_y, lt, drag_start_y_ + delta.y());
     } else if (drag_mode_ == DragMode::Origin) {
         double w = std::max(1.0f, drag_start_w_);
         double h = std::max(1.0f, drag_start_h_);
         layer->origin_x = (float)std::clamp(drag_start_origin_x_ + delta.x() / w, 0.0, 1.0);
         layer->origin_y = (float)std::clamp(drag_start_origin_y_ + delta.y() / h, 0.0, 1.0);
-        layer->origin_x_prop.static_value = layer->origin_x;
-        layer->origin_y_prop.static_value = layer->origin_y;
-        layer->pos_x.static_value = drag_start_x_ + delta.x();
-        layer->pos_y.static_value = drag_start_y_ + delta.y();
+        set_animated_value(layer->origin_x_prop, lt, layer->origin_x);
+        set_animated_value(layer->origin_y_prop, lt, layer->origin_y);
+        set_animated_value(layer->pos_x, lt, drag_start_x_ + delta.x());
+        set_animated_value(layer->pos_y, lt, drag_start_y_ + delta.y());
     } else {
         QPointF local = canvas_to_layer(*layer, canvas);
         double left = -drag_start_origin_x_ * drag_start_w_;
@@ -839,8 +860,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt)
         }
         layer->rect_width = (float)new_w;
         layer->rect_height = (float)new_h;
-        layer->box_width.static_value = new_w;
-        layer->box_height.static_value = new_h;
+        set_animated_value(layer->box_width, lt, new_w);
+        set_animated_value(layer->box_height, lt, new_h);
     }
 
     dirty_ = true;
@@ -1582,22 +1603,34 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     /* ── Connect signals → property_changed ── */
     auto emit_change = [this]() { if (!loading_values_) emit property_changed(); };
+    auto local_time = [this]() {
+        return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
+                                   std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
+    };
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->pos_x.static_value = v; emit_change(); }
+            this, [this, local_time, emit_change](double v){
+                if (layer_) { set_animated_value(layer_->pos_x, local_time(), v); emit_change(); }
             });
     connect(spn_py_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->pos_y.static_value = v; emit_change(); }
+            this, [this, local_time, emit_change](double v){
+                if (layer_) { set_animated_value(layer_->pos_y, local_time(), v); emit_change(); }
             });
     connect(spn_rot_,      QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->rotation.static_value = v; emit_change(); }
+            this, [this, local_time, emit_change](double v){
+                if (layer_) { set_animated_value(layer_->rotation, local_time(), v); emit_change(); }
             });
     connect(spn_opacity_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->opacity.static_value = v; emit_change(); }
+            this, [this, local_time, emit_change](double v){
+                if (layer_) { set_animated_value(layer_->opacity, local_time(), v); emit_change(); }
+            });
+    connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, local_time, emit_change](double v){
+                if (layer_) { layer_->origin_x = (float)v; set_animated_value(layer_->origin_x_prop, local_time(), v); emit_change(); }
+            });
+    connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, local_time, emit_change](double v){
+                if (layer_) { layer_->origin_y = (float)v; set_animated_value(layer_->origin_y_prop, local_time(), v); emit_change(); }
             });
     connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
@@ -1628,42 +1661,44 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (layer_) { layer_->font_italic = v; emit_change(); }
             });
     connect(btn_text_color_, &QPushButton::clicked,
-            this, [this, emit_change]() {
+            this, [this, local_time, emit_change]() {
                 if (!layer_) return;
-                QColor initial = color_from_argb(layer_->text_color);
+                QColor initial = color_from_argb(eval_text_color(*layer_, local_time()));
                 QColor picked = QColorDialog::getColor(initial, this, "Text Color",
                                                         QColorDialog::ShowAlphaChannel);
                 if (!picked.isValid()) return;
                 layer_->text_color = argb_from_color(picked);
-                set_channel_statics(*layer_, true, layer_->text_color);
+                set_color_channels_at(*layer_, true, local_time(), layer_->text_color);
                 style_color_button(btn_text_color_, layer_->text_color);
                 emit_change();
             });
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
+            this, [this, local_time, emit_change](double v){
                 if (!layer_) return;
-                double old_w = std::max(1.0f, layer_->rect_width);
-                double old_h = std::max(1.0f, layer_->rect_height);
+                double t = local_time();
+                double old_w = eval_box_width(*layer_, t);
+                double old_h = eval_box_height(*layer_, t);
                 layer_->rect_width = (float)v;
-                layer_->box_width.static_value = v;
+                set_animated_value(layer_->box_width, t, v);
                 if (layer_->type == LayerType::Image && layer_->lock_aspect_ratio && old_h > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
-                    layer_->box_height.static_value = layer_->rect_height;
+                    set_animated_value(layer_->box_height, t, layer_->rect_height);
                     QSignalBlocker block(spn_layer_h_);
                     spn_layer_h_->setValue(layer_->rect_height);
                 }
                 emit_change();
             });
     connect(spn_layer_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
+            this, [this, local_time, emit_change](double v){
                 if (!layer_) return;
-                double old_w = std::max(1.0f, layer_->rect_width);
-                double old_h = std::max(1.0f, layer_->rect_height);
+                double t = local_time();
+                double old_w = eval_box_width(*layer_, t);
+                double old_h = eval_box_height(*layer_, t);
                 layer_->rect_height = (float)v;
-                layer_->box_height.static_value = v;
+                set_animated_value(layer_->box_height, t, v);
                 if (layer_->type == LayerType::Image && layer_->lock_aspect_ratio && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
-                    layer_->box_width.static_value = layer_->rect_width;
+                    set_animated_value(layer_->box_width, t, layer_->rect_width);
                     QSignalBlocker block(spn_layer_w_);
                     spn_layer_w_->setValue(layer_->rect_width);
                 }
@@ -1674,14 +1709,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (layer_) { layer_->corner_radius = (float)v; emit_change(); }
             });
     connect(btn_fill_color_, &QPushButton::clicked,
-            this, [this, emit_change]() {
+            this, [this, local_time, emit_change]() {
                 if (!layer_) return;
-                QColor initial = color_from_argb(layer_->fill_color);
+                QColor initial = color_from_argb(eval_fill_color(*layer_, local_time()));
                 QColor picked = QColorDialog::getColor(initial, this, "Fill Color",
                                                         QColorDialog::ShowAlphaChannel);
                 if (!picked.isValid()) return;
                 layer_->fill_color = argb_from_color(picked);
-                set_channel_statics(*layer_, false, layer_->fill_color);
+                set_color_channels_at(*layer_, false, local_time(), layer_->fill_color);
                 style_color_button(btn_fill_color_, layer_->fill_color);
                 emit_change();
             });
@@ -1694,7 +1729,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (layer_) { layer_->lock_aspect_ratio = v; emit_change(); }
             });
     connect(btn_pick_image_, &QPushButton::clicked,
-            this, [this, emit_change]() {
+            this, [this, local_time, emit_change]() {
                 if (!layer_) return;
                 QString path = QFileDialog::getOpenFileName(
                     this, "Choose Image",
@@ -1704,19 +1739,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->image_path = path.toStdString();
                 QImage img(path);
                 if (!img.isNull()) {
+                    double t = local_time();
                     layer_->rect_width = (float)img.width();
                     layer_->rect_height = (float)img.height();
-                    layer_->box_width.static_value = layer_->rect_width;
-                    layer_->box_height.static_value = layer_->rect_height;
+                    set_animated_value(layer_->box_width, t, layer_->rect_width);
+                    set_animated_value(layer_->box_height, t, layer_->rect_height);
                 }
                 load_values();
                 emit_change();
             });
 
-    auto local_time = [this]() {
-        return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
-                                   std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
-    };
     connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
         toggle_keyframe(layer_->pos_x, local_time(), spn_px_->value());
