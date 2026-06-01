@@ -63,11 +63,11 @@ cmake -B build -G Ninja \
 # 3. Build
 cmake --build build
 
-# 4. Install (OBS plugin path)
-sudo cmake --install build
-# or symlink:
-ln -s $(pwd)/build/obs-plugins/obs-titles.so \
-      ~/.config/obs-studio/plugins/obs-titles/bin/64bit/obs-titles.so
+# 4. Install to OBS' per-user plugin folder
+cmake --install build --prefix ~/.config/obs-studio/plugins
+# or copy/symlink the staged build tree:
+mkdir -p ~/.config/obs-studio/plugins
+cp -R build/obs-titles ~/.config/obs-studio/plugins/
 ```
 
 ### macOS
@@ -82,16 +82,45 @@ cmake -B build \
 cmake --build build
 ```
 
-### Windows (MSYS2 / vcpkg)
+The standalone build stages a directly copyable plugin folder at
+`build/obs-titles`, with the binary under `bin/<arch>` and locale files under
+`data/locale`.
+
+### Windows (Visual Studio / vcpkg)
+
+Install Cairo, Pango, and Qt with vcpkg, then point the build at either an OBS
+plugin dependencies package or an OBS Studio install tree with `OBS_SDK_DIR` (or
+`-DOBS_SDK_DIR=...`). The helper script also accepts `-ObsSdkDir` and honours
+`VCPKG_ROOT`, `OBS_SDK_DIR`, `OBS_STUDIO_DIR`, and `OBS_PLUGINS_PATH`. By
+default, the helper installs to OBS' recommended per-machine plugin root,
+`C:\ProgramData\obs-studio\plugins`.
 
 ```bat
-vcpkg install cairo pango[fontconfig] obs-studio qt6-base
+vcpkg install cairo pango[fontconfig] qt6-base
 
+set OBS_SDK_DIR=C:\path\to\plugin-deps-or-obs-studio
 cmake -B build -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DOBS_SDK_DIR=%OBS_SDK_DIR%
 
 cmake --build build --config Release
 ```
+
+Or run the convenience script:
+
+```powershell
+.\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio
+```
+
+After install, OBS should see this structure:
+
+```text
+C:\ProgramData\obs-studio\plugins\obs-titles\
+├── bin\64bit\obs-titles.dll
+└── data\locale\en-US.ini
+```
+
+Use `-InstallRoot` if you need a portable OBS/custom plugin root instead.
 
 ---
 
