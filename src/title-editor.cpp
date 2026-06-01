@@ -668,24 +668,14 @@ void TitleEditor::step_forward()
 }
 
 
-static void collect_layer_keyframes(const std::shared_ptr<Layer> &layer,
-                                    std::vector<double> &times)
+static void collect_timeline_keyframes(const std::shared_ptr<Layer> &layer,
+                                       std::vector<double> &times)
 {
     if (!layer) return;
-    auto collect = [&](const AnimatedProperty &prop) {
-        for (const auto &kf : prop.keyframes)
+    for (auto *prop : timeline_properties(*layer)) {
+        for (const auto &kf : prop->keyframes)
             times.push_back(layer->in_time + kf.time);
-    };
-
-    collect(layer->pos_x); collect(layer->pos_y);
-    collect(layer->scale_x); collect(layer->scale_y);
-    collect(layer->rotation); collect(layer->opacity);
-    collect(layer->box_width); collect(layer->box_height);
-    collect(layer->origin_x_prop); collect(layer->origin_y_prop);
-    collect(layer->text_color_a); collect(layer->text_color_r);
-    collect(layer->text_color_g); collect(layer->text_color_b);
-    collect(layer->fill_color_a); collect(layer->fill_color_r);
-    collect(layer->fill_color_g); collect(layer->fill_color_b);
+    }
 }
 
 void TitleEditor::previous_keyframe()
@@ -693,9 +683,9 @@ void TitleEditor::previous_keyframe()
     if (!title_) return;
     std::vector<double> times;
     if (!sel_layer_id_.empty())
-        collect_layer_keyframes(title_->find_layer(sel_layer_id_), times);
+        collect_timeline_keyframes(title_->find_layer(sel_layer_id_), times);
     if (times.empty())
-        for (const auto &layer : title_->layers) collect_layer_keyframes(layer, times);
+        for (const auto &layer : title_->layers) collect_timeline_keyframes(layer, times);
 
     constexpr double kEpsilon = 1.0 / 240.0;
     double target = -1.0;
@@ -711,66 +701,9 @@ void TitleEditor::next_keyframe()
     if (!title_) return;
     std::vector<double> times;
     if (!sel_layer_id_.empty())
-        collect_layer_keyframes(title_->find_layer(sel_layer_id_), times);
+        collect_timeline_keyframes(title_->find_layer(sel_layer_id_), times);
     if (times.empty())
-        for (const auto &layer : title_->layers) collect_layer_keyframes(layer, times);
-
-    constexpr double kEpsilon = 1.0 / 240.0;
-    double target = title_->duration + 1.0;
-    for (double t : times) {
-        if (t > playhead_ + kEpsilon)
-            target = std::min(target, t);
-    }
-    if (target <= title_->duration) on_playhead_changed(target);
-}
-
-
-static void collect_layer_keyframes(const std::shared_ptr<Layer> &layer,
-                                    std::vector<double> &times)
-{
-    if (!layer) return;
-    auto collect = [&](const AnimatedProperty &prop) {
-        for (const auto &kf : prop.keyframes)
-            times.push_back(layer->in_time + kf.time);
-    };
-
-    collect(layer->pos_x); collect(layer->pos_y);
-    collect(layer->scale_x); collect(layer->scale_y);
-    collect(layer->rotation); collect(layer->opacity);
-    collect(layer->box_width); collect(layer->box_height);
-    collect(layer->origin_x_prop); collect(layer->origin_y_prop);
-    collect(layer->text_color_a); collect(layer->text_color_r);
-    collect(layer->text_color_g); collect(layer->text_color_b);
-    collect(layer->fill_color_a); collect(layer->fill_color_r);
-    collect(layer->fill_color_g); collect(layer->fill_color_b);
-}
-
-void TitleEditor::previous_keyframe()
-{
-    if (!title_) return;
-    std::vector<double> times;
-    if (!sel_layer_id_.empty())
-        collect_layer_keyframes(title_->find_layer(sel_layer_id_), times);
-    if (times.empty())
-        for (const auto &layer : title_->layers) collect_layer_keyframes(layer, times);
-
-    constexpr double kEpsilon = 1.0 / 240.0;
-    double target = -1.0;
-    for (double t : times) {
-        if (t < playhead_ - kEpsilon)
-            target = std::max(target, t);
-    }
-    if (target >= 0.0) on_playhead_changed(target);
-}
-
-void TitleEditor::next_keyframe()
-{
-    if (!title_) return;
-    std::vector<double> times;
-    if (!sel_layer_id_.empty())
-        collect_layer_keyframes(title_->find_layer(sel_layer_id_), times);
-    if (times.empty())
-        for (const auto &layer : title_->layers) collect_layer_keyframes(layer, times);
+        for (const auto &layer : title_->layers) collect_timeline_keyframes(layer, times);
 
     constexpr double kEpsilon = 1.0 / 240.0;
     double target = title_->duration + 1.0;
