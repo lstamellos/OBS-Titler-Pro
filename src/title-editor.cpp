@@ -34,8 +34,13 @@
 #include <QScrollArea>
 #include <QFrame>
 #include <QSignalBlocker>
+#include <QKeyEvent>
+#include <QAbstractSpinBox>
+#include <QAbstractItemModel>
+#include <QTextEdit>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Dark AE-style palette constants                                   */
@@ -64,6 +69,91 @@ static uint32_t argb_from_color(const QColor &color)
            ((uint32_t)color.red() << 16) |
            ((uint32_t)color.green() << 8) |
            (uint32_t)color.blue();
+}
+
+
+static double eval_box_width(const Layer &layer, double t)
+{
+    return std::max(1.0, layer.box_width.is_animated()
+                         ? layer.box_width.evaluate(t)
+                         : (double)layer.rect_width);
+}
+
+static double eval_box_height(const Layer &layer, double t)
+{
+    return std::max(1.0, layer.box_height.is_animated()
+                         ? layer.box_height.evaluate(t)
+                         : (double)layer.rect_height);
+}
+
+static double eval_origin_x(const Layer &layer, double t)
+{
+    return std::clamp(layer.origin_x_prop.is_animated()
+                          ? layer.origin_x_prop.evaluate(t)
+                          : (double)layer.origin_x,
+                      0.0, 1.0);
+}
+
+static double eval_origin_y(const Layer &layer, double t)
+{
+    return std::clamp(layer.origin_y_prop.is_animated()
+                          ? layer.origin_y_prop.evaluate(t)
+                          : (double)layer.origin_y,
+                      0.0, 1.0);
+}
+
+static int eval_channel(const AnimatedProperty &prop, double fallback, double t)
+{
+    return (int)std::clamp(std::round(prop.is_animated() ? prop.evaluate(t) : fallback),
+                           0.0, 255.0);
+}
+
+static uint32_t eval_text_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.text_color_a, (layer.text_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.text_color_r, (layer.text_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.text_color_g, (layer.text_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.text_color_b, layer.text_color & 0xFF, t);
+}
+
+static uint32_t eval_fill_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.fill_color_a, (layer.fill_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.fill_color_r, (layer.fill_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.fill_color_g, (layer.fill_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
+}
+
+static void set_channel_statics(Layer &layer, bool text, uint32_t argb)
+{
+    auto &a = text ? layer.text_color_a : layer.fill_color_a;
+    auto &r = text ? layer.text_color_r : layer.fill_color_r;
+    auto &g = text ? layer.text_color_g : layer.fill_color_g;
+    auto &b = text ? layer.text_color_b : layer.fill_color_b;
+    a.static_value = (argb >> 24) & 0xFF;
+    r.static_value = (argb >> 16) & 0xFF;
+    g.static_value = (argb >> 8) & 0xFF;
+    b.static_value = argb & 0xFF;
+}
+
+static void add_or_replace_keyframe(AnimatedProperty &prop, double time, double value)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    prop.static_value = value;
+    for (auto &kf : prop.keyframes) {
+        if (std::abs(kf.time - time) <= kEpsilon) {
+            kf.time = time;
+            kf.value = value;
+            return;
+        }
+    }
+    Keyframe kf;
+    kf.time = time;
+    kf.value = value;
+    kf.easing = EasingType::Linear;
+    prop.keyframes.push_back(kf);
+    std::sort(prop.keyframes.begin(), prop.keyframes.end(),
+              [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
 }
 
 static void style_color_button(QPushButton *button, uint32_t argb)
@@ -134,9 +224,16 @@ void TitleEditor::build_ui()
     canvas_->setMinimumSize(300, 200);
     upper_split->addWidget(canvas_);
 
-    props_ = new PropertiesPanel(upper_split);
-    props_->setFixedWidth(280);
-    upper_split->addWidget(props_);
+    auto *side_panel = new QWidget(upper_split);
+    auto *side_layout = new QVBoxLayout(side_panel);
+    side_layout->setContentsMargins(0, 0, 0, 0);
+    side_layout->setSpacing(4);
+    title_props_ = new TitlePropertiesPanel(side_panel);
+    side_layout->addWidget(title_props_);
+    props_ = new PropertiesPanel(side_panel);
+    side_layout->addWidget(props_, 1);
+    side_panel->setFixedWidth(300);
+    upper_split->addWidget(side_panel);
     upper_split->setStretchFactor(0, 3);
     upper_split->setStretchFactor(1, 1);
 
@@ -179,6 +276,12 @@ void TitleEditor::build_ui()
                 l->pos_y.static_value = title_->height / 2.0;
                 l->rect_width = title_->width * 0.5f;
                 l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
+                l->box_width.static_value = l->rect_width;
+                l->box_height.static_value = l->rect_height;
+                l->origin_x_prop.static_value = l->origin_x;
+                l->origin_y_prop.static_value = l->origin_y;
+                set_channel_statics(*l, true, l->text_color);
+                set_channel_statics(*l, false, l->fill_color);
                 if (type == LayerType::Image) {
                     l->lock_aspect_ratio = true;
                     QString path = QFileDialog::getOpenFileName(
@@ -190,6 +293,8 @@ void TitleEditor::build_ui()
                     if (!img.isNull()) {
                         l->rect_width = (float)img.width();
                         l->rect_height = (float)img.height();
+                        l->box_width.static_value = l->rect_width;
+                        l->box_height.static_value = l->rect_height;
                     }
                 }
                 l->out_time = title_->duration;
@@ -234,6 +339,21 @@ void TitleEditor::build_ui()
 
     connect(props_, &PropertiesPanel::property_changed,
             this, &TitleEditor::on_title_modified);
+    connect(title_props_, &TitlePropertiesPanel::title_changed,
+            this, [this]() {
+                if (!title_) return;
+                playhead_ = std::clamp(playhead_, 0.0, title_->duration);
+                on_title_modified();
+                timeline_->set_title(title_);
+                on_playhead_changed(playhead_);
+            });
+    connect(layers_, &LayerStack::layer_order_changed,
+            this, [this]() {
+                canvas_->refresh_preview();
+                timeline_->set_title(title_);
+                TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().save();
+            });
 
     connect(canvas_, &CanvasPreview::layer_clicked,
             this, &TitleEditor::on_layer_selected);
@@ -320,6 +440,12 @@ void TitleEditor::open_title(const std::string &tid)
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
+    title_props_->set_title(title_);
+
+    if (!title_->layers.empty())
+        on_layer_selected(title_->layers.back()->id);
+    else
+        props_->set_layer(nullptr, playhead_);
 
     if (!title_->layers.empty())
         on_layer_selected(title_->layers.back()->id);
@@ -342,6 +468,7 @@ void TitleEditor::play_pause()
     playing_ = !playing_;
     if (playing_) {
         act_play_->setText("⏸ Pause");
+        playback_clock_.restart();
         play_timer_->start();
     } else {
         act_play_->setText("▶ Play");
@@ -363,10 +490,28 @@ void TitleEditor::step_forward()
 void TitleEditor::tick()
 {
     if (!title_ || !playing_) return;
-    constexpr double dt = 1.0 / 60.0;
+    double dt = playback_clock_.isValid() ? playback_clock_.restart() / 1000.0 : 0.0;
+    if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
     double t = playhead_ + dt;
-    if (t >= title_->duration) t = 0.0;
+    if (t >= title_->duration) t = std::fmod(t, std::max(0.001, title_->duration));
     on_playhead_changed(t);
+}
+
+void TitleEditor::keyPressEvent(QKeyEvent *ev)
+{
+    if (ev->key() == Qt::Key_Space && !ev->isAutoRepeat()) {
+        QWidget *fw = focusWidget();
+        bool editing_text = qobject_cast<QLineEdit *>(fw) ||
+                            qobject_cast<QTextEdit *>(fw) ||
+                            qobject_cast<QAbstractSpinBox *>(fw) ||
+                            qobject_cast<QComboBox *>(fw);
+        if (!editing_text) {
+            play_pause();
+            ev->accept();
+            return;
+        }
+    }
+    QDialog::keyPressEvent(ev);
 }
 
 /* ── Signal handlers ─────────────────────────────────────────────── */
@@ -401,6 +546,7 @@ void TitleEditor::on_title_modified()
 {
     if (title_) setWindowTitle("Title Editor  ·  modified");
     canvas_->refresh_preview();
+    if (timeline_) timeline_->set_title(title_);
     TitleDataStore::instance().notify_change();
     TitleDataStore::instance().save();
 }
@@ -444,9 +590,12 @@ std::shared_ptr<Layer> CanvasPreview::selected_layer() const
 
 QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
 {
-    double w = std::max(1.0f, layer.rect_width);
-    double h = std::max(1.0f, layer.rect_height);
-    return QRectF(-layer.origin_x * w, -layer.origin_y * h, w, h);
+    double lt = playhead_ - layer.in_time;
+    double w = eval_box_width(layer, lt);
+    double h = eval_box_height(layer, lt);
+    double ox = eval_origin_x(layer, lt);
+    double oy = eval_origin_y(layer, lt);
+    return QRectF(-ox * w, -oy * h, w, h);
 }
 
 double CanvasPreview::view_scale() const
@@ -552,6 +701,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt)
         double h = std::max(1.0f, drag_start_h_);
         layer->origin_x = (float)std::clamp(drag_start_origin_x_ + delta.x() / w, 0.0, 1.0);
         layer->origin_y = (float)std::clamp(drag_start_origin_y_ + delta.y() / h, 0.0, 1.0);
+        layer->origin_x_prop.static_value = layer->origin_x;
+        layer->origin_y_prop.static_value = layer->origin_y;
         layer->pos_x.static_value = drag_start_x_ + delta.x();
         layer->pos_y.static_value = drag_start_y_ + delta.y();
     } else {
@@ -582,6 +733,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt)
         }
         layer->rect_width = (float)new_w;
         layer->rect_height = (float)new_h;
+        layer->box_width.static_value = new_w;
+        layer->box_height.static_value = new_h;
     }
 
     dirty_ = true;
@@ -624,7 +777,7 @@ void CanvasPreview::render_to_pixmap()
         QRectF box = layer_local_rect(*layer);
 
         if (layer->type == LayerType::SolidRect) {
-            QColor fc = color_from_argb(layer->fill_color);
+            QColor fc = color_from_argb(eval_fill_color(*layer, lt));
             if (layer->corner_radius > 0) {
                 p.setBrush(fc);
                 p.setPen(Qt::NoPen);
@@ -646,22 +799,8 @@ void CanvasPreview::render_to_pixmap()
             }
         }
 
-        if (layer->type == LayerType::Image) {
-            QImage image(QString::fromStdString(layer->image_path));
-            QRectF target(-layer->rect_width / 2.0, -layer->rect_height / 2.0,
-                          layer->rect_width, layer->rect_height);
-            if (!image.isNull()) {
-                p.drawImage(target, image);
-            } else {
-                p.setBrush(QColor(0x33, 0x33, 0x33));
-                p.setPen(QPen(QColor(0xff, 0x55, 0x55), 2));
-                p.drawRect(target);
-                p.drawText(target, Qt::AlignCenter, "Missing Image");
-            }
-        }
-
         if (layer->type == LayerType::Text) {
-            QColor tc = color_from_argb(layer->text_color);
+            QColor tc = color_from_argb(eval_text_color(*layer, lt));
             QFont f(QString::fromStdString(layer->font_family));
             f.setPixelSize(layer->font_size);
             f.setBold(layer->font_bold);
@@ -856,6 +995,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
             this, &LayerStack::on_selection_changed);
     connect(list_, &QListWidget::itemChanged,
             this, &LayerStack::on_item_changed);
+    connect(list_->model(), &QAbstractItemModel::rowsMoved,
+            this, [this]() { sync_order_from_list(); });
 }
 
 void LayerStack::set_title(std::shared_ptr<Title> t)
@@ -864,6 +1005,23 @@ void LayerStack::set_title(std::shared_ptr<Title> t)
 }
 
 void LayerStack::refresh() { populate(); }
+
+void LayerStack::sync_order_from_list()
+{
+    if (!title_) return;
+
+    std::vector<std::shared_ptr<Layer>> reordered;
+    reordered.reserve(title_->layers.size());
+    for (int i = list_->count() - 1; i >= 0; --i) {
+        std::string id = list_->item(i)->data(Qt::UserRole).toString().toStdString();
+        if (auto layer = title_->find_layer(id))
+            reordered.push_back(layer);
+    }
+    if (reordered.size() == title_->layers.size()) {
+        title_->layers = std::move(reordered);
+        emit layer_order_changed();
+    }
+}
 
 void LayerStack::populate()
 {
@@ -1052,6 +1210,12 @@ void TimelineWidget::paintEvent(QPaintEvent *)
             draw_kf(layer->pos_x);   draw_kf(layer->pos_y);
             draw_kf(layer->scale_x); draw_kf(layer->scale_y);
             draw_kf(layer->rotation); draw_kf(layer->opacity);
+            draw_kf(layer->box_width); draw_kf(layer->box_height);
+            draw_kf(layer->origin_x_prop); draw_kf(layer->origin_y_prop);
+            draw_kf(layer->text_color_a); draw_kf(layer->text_color_r);
+            draw_kf(layer->text_color_g); draw_kf(layer->text_color_b);
+            draw_kf(layer->fill_color_a); draw_kf(layer->fill_color_r);
+            draw_kf(layer->fill_color_g); draw_kf(layer->fill_color_b);
         }
     }
 
@@ -1092,6 +1256,56 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
 void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
 {
     dragging_ = false;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ *  TitlePropertiesPanel
+ * ══════════════════════════════════════════════════════════════════ */
+TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
+    : QGroupBox("Title", parent)
+{
+    setStyleSheet(
+        "QGroupBox{color:#aaa;background:#1a1a1a;border:1px solid #333;"
+        "border-radius:3px;margin-top:6px;font-size:10px;padding-top:4px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:8px;}"
+        "QDoubleSpinBox{color:#ccc;background:#2a2a2a;border:none;"
+        "border-radius:2px;padding:2px;}");
+
+    auto *fl = new QFormLayout(this);
+    fl->setContentsMargins(8, 10, 8, 6);
+    fl->setSpacing(3);
+
+    spn_duration_ = new QDoubleSpinBox(this);
+    spn_duration_->setRange(0.1, 3600.0);
+    spn_duration_->setSingleStep(0.5);
+    spn_duration_->setDecimals(2);
+    spn_duration_->setSuffix(" s");
+    fl->addRow("Length:", spn_duration_);
+
+    connect(spn_duration_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                if (!title_ || loading_values_) return;
+                double old_duration = title_->duration;
+                title_->duration = v;
+                for (auto &layer : title_->layers) {
+                    if (std::abs(layer->out_time - old_duration) < 0.001 || layer->out_time > v)
+                        layer->out_time = v;
+                }
+                emit title_changed();
+            });
+}
+
+void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
+{
+    title_ = t;
+    load_values();
+}
+
+void TitlePropertiesPanel::load_values()
+{
+    loading_values_ = true;
+    spn_duration_->setValue(title_ ? title_->duration : 5.0);
+    loading_values_ = false;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1150,6 +1364,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     tfl->addRow("Opacity:", spn_opacity_);
     tfl->addRow("Origin X:", spn_origin_x_);
     tfl->addRow("Origin Y:", spn_origin_y_);
+    auto *tf_kf_row = new QHBoxLayout();
+    btn_kf_position_ = new QPushButton("◆ Pos", inner);
+    btn_kf_origin_ = new QPushButton("◆ Origin", inner);
+    btn_kf_opacity_ = new QPushButton("◆ Opacity", inner);
+    for (auto *b : {btn_kf_position_, btn_kf_origin_, btn_kf_opacity_}) {
+        b->setStyleSheet("QPushButton{color:#fff;background:#2a2a2a;border:none;border-radius:3px;padding:3px;}"
+                         "QPushButton:hover{background:#0078d4;}");
+        tf_kf_row->addWidget(b);
+    }
+    tfl->addRow("Keyframes:", tf_kf_row);
     vl->addWidget(tform_box);
 
     /* ── Text ── */
@@ -1190,6 +1414,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     txfl->addRow("Style:",  bi_row);
     btn_text_color_ = new QPushButton(inner);
     txfl->addRow("Color:", btn_text_color_);
+    btn_kf_text_color_ = new QPushButton("◆ Text Color", inner);
+    btn_kf_text_color_->setStyleSheet("QPushButton{color:#fff;background:#2a2a2a;border:none;border-radius:3px;padding:3px;}"
+                                      "QPushButton:hover{background:#0078d4;}");
+    txfl->addRow("Keyframe:", btn_kf_text_color_);
     vl->addWidget(text_box_);
 
     /* ── Rectangle ── */
@@ -1202,9 +1430,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_rect_corner_ = mk_dspin(0.0, 1000.0, 1.0);
     rfl->addRow("Width:", spn_layer_w_);
     rfl->addRow("Height:", spn_layer_h_);
+    btn_kf_size_ = new QPushButton("◆ Size", inner);
+    btn_kf_size_->setStyleSheet("QPushButton{color:#fff;background:#2a2a2a;border:none;border-radius:3px;padding:3px;}"
+                                "QPushButton:hover{background:#0078d4;}");
+    rfl->addRow("Keyframe:", btn_kf_size_);
     rfl->addRow("Corner:", spn_rect_corner_);
     btn_fill_color_ = new QPushButton(inner);
     rfl->addRow("Color:", btn_fill_color_);
+    btn_kf_fill_color_ = new QPushButton("◆ Fill Color", inner);
+    btn_kf_fill_color_->setStyleSheet(btn_kf_size_->styleSheet());
+    rfl->addRow("Color KF:", btn_kf_fill_color_);
     vl->addWidget(rect_box_);
 
     /* ── Image ── */
@@ -1250,11 +1485,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             });
     connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
-                if (layer_) { layer_->origin_x = (float)v; emit_change(); }
+                if (layer_) { layer_->origin_x = (float)v; layer_->origin_x_prop.static_value = v; emit_change(); }
             });
     connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
-                if (layer_) { layer_->origin_y = (float)v; emit_change(); }
+                if (layer_) { layer_->origin_y = (float)v; layer_->origin_y_prop.static_value = v; emit_change(); }
             });
     connect(txt_content_, &QLineEdit::textChanged,
             this, [this, emit_change](const QString &s){
@@ -1284,6 +1519,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                         QColorDialog::ShowAlphaChannel);
                 if (!picked.isValid()) return;
                 layer_->text_color = argb_from_color(picked);
+                set_channel_statics(*layer_, true, layer_->text_color);
                 style_color_button(btn_text_color_, layer_->text_color);
                 emit_change();
             });
@@ -1293,8 +1529,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 double old_w = std::max(1.0f, layer_->rect_width);
                 double old_h = std::max(1.0f, layer_->rect_height);
                 layer_->rect_width = (float)v;
+                layer_->box_width.static_value = v;
                 if (layer_->type == LayerType::Image && layer_->lock_aspect_ratio && old_h > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
+                    layer_->box_height.static_value = layer_->rect_height;
                     QSignalBlocker block(spn_layer_h_);
                     spn_layer_h_->setValue(layer_->rect_height);
                 }
@@ -1306,8 +1544,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 double old_w = std::max(1.0f, layer_->rect_width);
                 double old_h = std::max(1.0f, layer_->rect_height);
                 layer_->rect_height = (float)v;
+                layer_->box_height.static_value = v;
                 if (layer_->type == LayerType::Image && layer_->lock_aspect_ratio && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
+                    layer_->box_width.static_value = layer_->rect_width;
                     QSignalBlocker block(spn_layer_w_);
                     spn_layer_w_->setValue(layer_->rect_width);
                 }
@@ -1325,6 +1565,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                         QColorDialog::ShowAlphaChannel);
                 if (!picked.isValid()) return;
                 layer_->fill_color = argb_from_color(picked);
+                set_channel_statics(*layer_, false, layer_->fill_color);
                 style_color_button(btn_fill_color_, layer_->fill_color);
                 emit_change();
             });
@@ -1349,10 +1590,63 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (!img.isNull()) {
                     layer_->rect_width = (float)img.width();
                     layer_->rect_height = (float)img.height();
+                    layer_->box_width.static_value = layer_->rect_width;
+                    layer_->box_height.static_value = layer_->rect_height;
                 }
                 load_values();
                 emit_change();
             });
+
+    auto local_time = [this]() {
+        return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
+                                   std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
+    };
+    connect(btn_kf_position_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        double t = local_time();
+        add_or_replace_keyframe(layer_->pos_x, t, spn_px_->value());
+        add_or_replace_keyframe(layer_->pos_y, t, spn_py_->value());
+        emit_change();
+    });
+    connect(btn_kf_origin_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        double t = local_time();
+        add_or_replace_keyframe(layer_->origin_x_prop, t, spn_origin_x_->value());
+        add_or_replace_keyframe(layer_->origin_y_prop, t, spn_origin_y_->value());
+        emit_change();
+    });
+    connect(btn_kf_opacity_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        add_or_replace_keyframe(layer_->opacity, local_time(), spn_opacity_->value());
+        emit_change();
+    });
+    connect(btn_kf_size_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        double t = local_time();
+        add_or_replace_keyframe(layer_->box_width, t, spn_layer_w_->value());
+        add_or_replace_keyframe(layer_->box_height, t, spn_layer_h_->value());
+        emit_change();
+    });
+    connect(btn_kf_text_color_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        double t = local_time();
+        uint32_t color = eval_text_color(*layer_, t);
+        add_or_replace_keyframe(layer_->text_color_a, t, (color >> 24) & 0xFF);
+        add_or_replace_keyframe(layer_->text_color_r, t, (color >> 16) & 0xFF);
+        add_or_replace_keyframe(layer_->text_color_g, t, (color >> 8) & 0xFF);
+        add_or_replace_keyframe(layer_->text_color_b, t, color & 0xFF);
+        emit_change();
+    });
+    connect(btn_kf_fill_color_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        double t = local_time();
+        uint32_t color = eval_fill_color(*layer_, t);
+        add_or_replace_keyframe(layer_->fill_color_a, t, (color >> 24) & 0xFF);
+        add_or_replace_keyframe(layer_->fill_color_r, t, (color >> 16) & 0xFF);
+        add_or_replace_keyframe(layer_->fill_color_g, t, (color >> 8) & 0xFF);
+        add_or_replace_keyframe(layer_->fill_color_b, t, color & 0xFF);
+        emit_change();
+    });
 }
 
 void PropertiesPanel::set_title(std::shared_ptr<Title> t)
@@ -1403,43 +1697,42 @@ void PropertiesPanel::load_values()
     rect_box_->setTitle(is_text ? "Text Box" : (is_image ? "Image Size" : "Rectangle"));
     spn_rect_corner_->setVisible(is_rect);
     btn_fill_color_->setVisible(is_rect);
+    btn_kf_text_color_->setVisible(is_text);
+    btn_kf_fill_color_->setVisible(is_rect);
     if (auto *form = qobject_cast<QFormLayout *>(rect_box_->layout())) {
         if (auto *label = form->labelForField(spn_rect_corner_))
             label->setVisible(is_rect);
         if (auto *label = form->labelForField(btn_fill_color_))
             label->setVisible(is_rect);
+        if (auto *label = form->labelForField(btn_kf_fill_color_))
+            label->setVisible(is_rect);
     }
     image_box_->setVisible(is_image);
 
+    double lt = std::clamp(playhead_ - layer_->in_time, 0.0,
+                           std::max(0.0, layer_->out_time - layer_->in_time));
     spn_px_->setValue(layer_->pos_x.is_animated()
-                      ? layer_->pos_x.evaluate(playhead_)
+                      ? layer_->pos_x.evaluate(lt)
                       : layer_->pos_x.static_value);
     spn_py_->setValue(layer_->pos_y.is_animated()
-                      ? layer_->pos_y.evaluate(playhead_)
+                      ? layer_->pos_y.evaluate(lt)
                       : layer_->pos_y.static_value);
     spn_rot_->setValue(layer_->rotation.is_animated()
-                       ? layer_->rotation.evaluate(playhead_)
+                       ? layer_->rotation.evaluate(lt)
                        : layer_->rotation.static_value);
     spn_opacity_->setValue(layer_->opacity.is_animated()
-                           ? layer_->opacity.evaluate(playhead_)
+                           ? layer_->opacity.evaluate(lt)
                            : layer_->opacity.static_value);
-    spn_origin_x_->setValue(layer_->origin_x);
-    spn_origin_y_->setValue(layer_->origin_y);
+    spn_origin_x_->setValue(eval_origin_x(*layer_, lt));
+    spn_origin_y_->setValue(eval_origin_y(*layer_, lt));
 
-    spn_layer_w_->setValue(layer_->rect_width);
-    spn_layer_h_->setValue(layer_->rect_height);
+    spn_layer_w_->setValue(eval_box_width(*layer_, lt));
+    spn_layer_h_->setValue(eval_box_height(*layer_, lt));
     spn_rect_corner_->setValue(layer_->corner_radius);
     edit_image_path_->setText(QString::fromStdString(layer_->image_path));
     chk_lock_aspect_->setChecked(layer_->lock_aspect_ratio);
-    style_color_button(btn_text_color_, layer_->text_color);
-    style_color_button(btn_fill_color_, layer_->fill_color);
-
-    spn_layer_w_->setValue(layer_->rect_width);
-    spn_layer_h_->setValue(layer_->rect_height);
-    spn_rect_corner_->setValue(layer_->corner_radius);
-    edit_image_path_->setText(QString::fromStdString(layer_->image_path));
-    style_color_button(btn_text_color_, layer_->text_color);
-    style_color_button(btn_fill_color_, layer_->fill_color);
+    style_color_button(btn_text_color_, eval_text_color(*layer_, lt));
+    style_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
 
     txt_content_->setText(QString::fromStdString(layer_->text_content));
     int fi = cmb_font_->findText(QString::fromStdString(layer_->font_family));

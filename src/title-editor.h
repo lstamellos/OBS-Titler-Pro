@@ -34,6 +34,7 @@
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QPushButton>
 #include <QLineEdit>
 #include <QSpinBox>
@@ -46,6 +47,8 @@ class CanvasPreview;
 class LayerStack;
 class TimelineWidget;
 class PropertiesPanel;
+class TitlePropertiesPanel;
+class QKeyEvent;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -73,6 +76,9 @@ public slots:
     void on_playhead_changed(double t);
     void on_title_modified();
 
+protected:
+    void keyPressEvent(QKeyEvent *ev) override;
+
 private slots:
     void tick();
 
@@ -87,12 +93,14 @@ private:
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
     QTimer                *play_timer_ = nullptr;
+    QElapsedTimer          playback_clock_;
 
     /* Sub-widgets */
     CanvasPreview   *canvas_    = nullptr;
     LayerStack      *layers_    = nullptr;
     TimelineWidget  *timeline_  = nullptr;
     PropertiesPanel *props_     = nullptr;
+    TitlePropertiesPanel *title_props_ = nullptr;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
 
@@ -189,6 +197,7 @@ private slots:
 
 private:
     void populate();
+    void sync_order_from_list();
     std::string selected_id() const;
 
     std::shared_ptr<Title> title_;
@@ -237,6 +246,27 @@ private:
     bool   dragging_  = false;
     double pixels_per_sec_ = 80.0;
     int    scroll_x_       = 0;
+};
+
+/* ══════════════════════════════════════════════════════════════════
+ *  TitlePropertiesPanel – global title inspector
+ * ══════════════════════════════════════════════════════════════════ */
+class TitlePropertiesPanel : public QGroupBox {
+    Q_OBJECT
+
+public:
+    explicit TitlePropertiesPanel(QWidget *parent = nullptr);
+    void set_title(std::shared_ptr<Title> t);
+
+signals:
+    void title_changed();
+
+private:
+    void load_values();
+
+    std::shared_ptr<Title> title_;
+    bool loading_values_ = false;
+    QDoubleSpinBox *spn_duration_ = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -296,4 +326,10 @@ private:
     QDoubleSpinBox  *spn_origin_x_ = nullptr;
     QDoubleSpinBox  *spn_origin_y_ = nullptr;
     QCheckBox       *chk_lock_aspect_ = nullptr;
+    QPushButton     *btn_kf_position_ = nullptr;
+    QPushButton     *btn_kf_origin_ = nullptr;
+    QPushButton     *btn_kf_opacity_ = nullptr;
+    QPushButton     *btn_kf_size_ = nullptr;
+    QPushButton     *btn_kf_text_color_ = nullptr;
+    QPushButton     *btn_kf_fill_color_ = nullptr;
 };

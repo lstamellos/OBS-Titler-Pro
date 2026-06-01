@@ -16,6 +16,18 @@
 
 using json = nlohmann::json;
 
+static void set_color_channels(Layer &l, bool text, uint32_t argb)
+{
+    AnimatedProperty &a = text ? l.text_color_a : l.fill_color_a;
+    AnimatedProperty &r = text ? l.text_color_r : l.fill_color_r;
+    AnimatedProperty &g = text ? l.text_color_g : l.fill_color_g;
+    AnimatedProperty &b = text ? l.text_color_b : l.fill_color_b;
+    a.static_value = (argb >> 24) & 0xFF;
+    r.static_value = (argb >> 16) & 0xFF;
+    g.static_value = (argb >> 8) & 0xFF;
+    b.static_value = argb & 0xFF;
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  UUID helper
  * ══════════════════════════════════════════════════════════════════ */
@@ -170,6 +182,10 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     layer->pos_y.static_value = 540.0;
     layer->rect_width = 960.0f;
     layer->rect_height = 160.0f;
+    layer->box_width.static_value = layer->rect_width;
+    layer->box_height.static_value = layer->rect_height;
+    set_color_channels(*layer, true, layer->text_color);
+    set_color_channels(*layer, false, layer->fill_color);
     layer->text_content = name;
     t->layers.push_back(layer);
 
@@ -288,8 +304,20 @@ static json layer_to_json(const Layer &l)
     j["rect_width"]    = l.rect_width;
     j["rect_height"]   = l.rect_height;
     j["corner_radius"] = l.corner_radius;
+    j["box_width"]     = aprop_to_json(l.box_width);
+    j["box_height"]    = aprop_to_json(l.box_height);
     j["origin_x"]      = l.origin_x;
     j["origin_y"]      = l.origin_y;
+    j["origin_x_prop"] = aprop_to_json(l.origin_x_prop);
+    j["origin_y_prop"] = aprop_to_json(l.origin_y_prop);
+    j["text_color_a"]  = aprop_to_json(l.text_color_a);
+    j["text_color_r"]  = aprop_to_json(l.text_color_r);
+    j["text_color_g"]  = aprop_to_json(l.text_color_g);
+    j["text_color_b"]  = aprop_to_json(l.text_color_b);
+    j["fill_color_a"]  = aprop_to_json(l.fill_color_a);
+    j["fill_color_r"]  = aprop_to_json(l.fill_color_r);
+    j["fill_color_g"]  = aprop_to_json(l.fill_color_g);
+    j["fill_color_b"]  = aprop_to_json(l.fill_color_b);
     j["image_path"]    = l.image_path;
     j["lock_aspect_ratio"] = l.lock_aspect_ratio;
     return j;
@@ -328,8 +356,26 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     l->rect_width    = j.value("rect_width",    1920.0f);
     l->rect_height   = j.value("rect_height",   100.0f);
     l->corner_radius = j.value("corner_radius", 0.0f);
+    l->box_width.static_value = l->rect_width;
+    l->box_height.static_value = l->rect_height;
+    if (j.contains("box_width"))  l->box_width  = aprop_from_json(j["box_width"],  "box_width");
+    if (j.contains("box_height")) l->box_height = aprop_from_json(j["box_height"], "box_height");
     l->origin_x      = j.value("origin_x",      0.5f);
     l->origin_y      = j.value("origin_y",      0.5f);
+    l->origin_x_prop.static_value = l->origin_x;
+    l->origin_y_prop.static_value = l->origin_y;
+    if (j.contains("origin_x_prop")) l->origin_x_prop = aprop_from_json(j["origin_x_prop"], "origin_x");
+    if (j.contains("origin_y_prop")) l->origin_y_prop = aprop_from_json(j["origin_y_prop"], "origin_y");
+    set_color_channels(*l, true, l->text_color);
+    set_color_channels(*l, false, l->fill_color);
+    if (j.contains("text_color_a")) l->text_color_a = aprop_from_json(j["text_color_a"], "text_color_a");
+    if (j.contains("text_color_r")) l->text_color_r = aprop_from_json(j["text_color_r"], "text_color_r");
+    if (j.contains("text_color_g")) l->text_color_g = aprop_from_json(j["text_color_g"], "text_color_g");
+    if (j.contains("text_color_b")) l->text_color_b = aprop_from_json(j["text_color_b"], "text_color_b");
+    if (j.contains("fill_color_a")) l->fill_color_a = aprop_from_json(j["fill_color_a"], "fill_color_a");
+    if (j.contains("fill_color_r")) l->fill_color_r = aprop_from_json(j["fill_color_r"], "fill_color_r");
+    if (j.contains("fill_color_g")) l->fill_color_g = aprop_from_json(j["fill_color_g"], "fill_color_g");
+    if (j.contains("fill_color_b")) l->fill_color_b = aprop_from_json(j["fill_color_b"], "fill_color_b");
     l->image_path    = j.value("image_path",    "");
     l->lock_aspect_ratio = j.value("lock_aspect_ratio", true);
     return l;

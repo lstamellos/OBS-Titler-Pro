@@ -76,6 +76,59 @@ static void unpack_color(uint32_t c,
     b = ((c >>  0) & 0xFF) / 255.0;
 }
 
+
+static double eval_box_width(const Layer &layer, double t)
+{
+    return std::max(1.0, layer.box_width.is_animated()
+                         ? layer.box_width.evaluate(t)
+                         : (double)layer.rect_width);
+}
+
+static double eval_box_height(const Layer &layer, double t)
+{
+    return std::max(1.0, layer.box_height.is_animated()
+                         ? layer.box_height.evaluate(t)
+                         : (double)layer.rect_height);
+}
+
+static double eval_origin_x(const Layer &layer, double t)
+{
+    return std::clamp(layer.origin_x_prop.is_animated()
+                          ? layer.origin_x_prop.evaluate(t)
+                          : (double)layer.origin_x,
+                      0.0, 1.0);
+}
+
+static double eval_origin_y(const Layer &layer, double t)
+{
+    return std::clamp(layer.origin_y_prop.is_animated()
+                          ? layer.origin_y_prop.evaluate(t)
+                          : (double)layer.origin_y,
+                      0.0, 1.0);
+}
+
+static int eval_channel(const AnimatedProperty &prop, double fallback, double t)
+{
+    return (int)std::clamp(std::round(prop.is_animated() ? prop.evaluate(t) : fallback),
+                           0.0, 255.0);
+}
+
+static uint32_t eval_text_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.text_color_a, (layer.text_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.text_color_r, (layer.text_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.text_color_g, (layer.text_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.text_color_b, layer.text_color & 0xFF, t);
+}
+
+static uint32_t eval_fill_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.fill_color_a, (layer.fill_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.fill_color_r, (layer.fill_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.fill_color_g, (layer.fill_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  Cairo rendering
  * ══════════════════════════════════════════════════════════════════ */
@@ -91,8 +144,8 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     double sy = layer.scale_y.evaluate(t);
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
-    double box_w = std::max(1.0f, layer.rect_width);
-    double box_h = std::max(1.0f, layer.rect_height);
+    double box_w = eval_box_width(layer, t);
+    double box_h = eval_box_height(layer, t);
 
     cairo_save(cr);
     cairo_translate(cr, px, py);
@@ -124,8 +177,8 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     pango_layout_get_pixel_size(layout, &pw, &ph);
     (void)pw;
 
-    double text_x = -layer.origin_x * box_w;
-    double text_y = -layer.origin_y * box_h;
+    double text_x = -eval_origin_x(layer, t) * box_w;
+    double text_y = -eval_origin_y(layer, t) * box_h;
     if (layer.align_v == 1) text_y += (box_h - ph) / 2.0;
     if (layer.align_v == 2) text_y += box_h - ph;
     cairo_translate(cr, text_x, text_y);
@@ -140,7 +193,7 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     }
 
     double fr, fg, fb, fa;
-    unpack_color(layer.text_color, fr, fg, fb, fa);
+    unpack_color(eval_text_color(layer, t), fr, fg, fb, fa);
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
     pango_cairo_show_layout(cr, layout);
 
@@ -157,14 +210,14 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
 
-    double w = std::max(1.0f, layer.rect_width);
-    double h = std::max(1.0f, layer.rect_height);
+    double w = eval_box_width(layer, t);
+    double h = eval_box_height(layer, t);
     double r = std::min<double>(layer.corner_radius, std::min(w, h) / 2.0);
-    double x = -layer.origin_x * w;
-    double y = -layer.origin_y * h;
+    double x = -eval_origin_x(layer, t) * w;
+    double y = -eval_origin_y(layer, t) * h;
 
     double fr, fg, fb, fa;
-    unpack_color(layer.fill_color, fr, fg, fb, fa);
+    unpack_color(eval_fill_color(layer, t), fr, fg, fb, fa);
 
     cairo_save(cr);
     cairo_translate(cr, px, py);
@@ -204,8 +257,8 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
     double sy = layer.scale_y.evaluate(t);
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
-    double w = std::max(1.0f, layer.rect_width);
-    double h = std::max(1.0f, layer.rect_height);
+    double w = eval_box_width(layer, t);
+    double h = eval_box_height(layer, t);
 
     cairo_surface_t *img_surface = cairo_image_surface_create_for_data(
         argb.bits(), CAIRO_FORMAT_ARGB32,
@@ -216,8 +269,8 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx * (w / argb.width()), sy * (h / argb.height()));
     cairo_set_source_surface(cr, img_surface,
-                             -layer.origin_x * argb.width(),
-                             -layer.origin_y * argb.height());
+                             -eval_origin_x(layer, t) * argb.width(),
+                             -eval_origin_y(layer, t) * argb.height());
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
 
