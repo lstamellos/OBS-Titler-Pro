@@ -14,8 +14,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(OBS_TITLES_PLUGIN_NAME "obs-titles")
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(OBS_TITLES_ARCH_DIR "64bit")
+  set(OBS_TITLES_VCPKG_DEFAULT_TRIPLET "x64-windows")
 else()
   set(OBS_TITLES_ARCH_DIR "32bit")
+  set(OBS_TITLES_VCPKG_DEFAULT_TRIPLET "x86-windows")
 endif()
 set(OBS_TITLES_PACKAGE_DIR
     "${CMAKE_BINARY_DIR}/${OBS_TITLES_PLUGIN_NAME}"
@@ -329,6 +331,55 @@ add_custom_command(TARGET obs-titles POST_BUILD
             "${CMAKE_SOURCE_DIR}/data/locale"
             "${OBS_TITLES_PACKAGE_DIR}/data/locale"
     COMMENT "Staging OBS plugin data files")
+
+if(WIN32)
+  # OBS loads third-party DLL dependencies from the plugin binary directory.
+  # Copy vcpkg-provided runtime DLLs into the staged folder so the plugin does
+  # not compile successfully but fail LoadLibrary at OBS startup.
+  set(OBS_TITLES_RUNTIME_DLL_DIRS)
+  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+         "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+  endif()
+  if(DEFINED _VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+         "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+  endif()
+  if(DEFINED ENV{VCPKG_ROOT})
+    if(DEFINED VCPKG_TARGET_TRIPLET)
+      list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+           "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/bin")
+    endif()
+    list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+         "$ENV{VCPKG_ROOT}/installed/${OBS_TITLES_VCPKG_DEFAULT_TRIPLET}/bin")
+  endif()
+
+  set(OBS_TITLES_RUNTIME_DLLS)
+  list(REMOVE_DUPLICATES OBS_TITLES_RUNTIME_DLL_DIRS)
+  foreach(runtime_dir IN LISTS OBS_TITLES_RUNTIME_DLL_DIRS)
+    if(IS_DIRECTORY "${runtime_dir}")
+      file(GLOB runtime_dlls CONFIGURE_DEPENDS "${runtime_dir}/*.dll")
+      list(APPEND OBS_TITLES_RUNTIME_DLLS ${runtime_dlls})
+    endif()
+  endforeach()
+
+  if(OBS_TITLES_RUNTIME_DLLS)
+    list(REMOVE_DUPLICATES OBS_TITLES_RUNTIME_DLLS)
+    add_custom_command(TARGET obs-titles POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                ${OBS_TITLES_RUNTIME_DLLS}
+                "$<TARGET_FILE_DIR:obs-titles>"
+        COMMAND_EXPAND_LISTS
+        COMMENT "Copying Windows runtime DLL dependencies")
+    install(FILES ${OBS_TITLES_RUNTIME_DLLS}
+            DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
+  else()
+    message(WARNING
+      "No vcpkg runtime DLLs were found to bundle with obs-titles. "
+      "If OBS reports that obs-titles failed to load, ensure Qt/Cairo/Pango "
+      "runtime DLLs are next to the plugin binary or use build-windows.ps1.")
+  endif()
+endif()
 
 # ── Install ──────────────────────────────────────────────────────────
 # Install into the same user-plugin layout expected below the chosen prefix.

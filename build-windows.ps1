@@ -178,40 +178,60 @@ if (Test-Path $StagedData) {
     }
 }
 
-# 7. Copy vcpkg runtime DLL dependencies
-Write-Host "`n=== Copying runtime DLLs from vcpkg ==="
-$VcpkgBin = Join-Path $VcpkgDir "installed\x64-windows\bin"
-$RuntimeDlls = @(
-    "cairo.dll",
-    "pango-1.0.dll",
-    "pangocairo-1.0.dll",
-    "pangoft2-1.0.dll",
-    "glib-2.0.dll",
-    "gobject-2.0.dll",
-    "gmodule-2.0.dll",
-    "gio-2.0.dll",
-    "freetype.dll",
-    "harfbuzz.dll",
-    "libpng16.dll",
-    "zlib1.dll",
-    "pixman-1.dll",
-    "ffi-8.dll",
-    "intl.dll",
-    "iconv-2.dll",
-    "fontconfig.dll",
-    "expat.dll",
-    "brotlidec.dll",
-    "brotlicommon.dll",
-    "bz2.dll"
-)
+# 7. Copy runtime DLL dependencies next to the plugin binary.
+# A plugin can compile and still fail to load in OBS if Qt/Cairo/Pango DLLs are
+# not beside obs-titles.dll, so copy every vcpkg runtime DLL rather than trying
+# to maintain a fragile hand-written dependency list.
+Write-Host "`n=== Copying runtime DLL dependencies ==="
+$RuntimeDllDirs = @()
+$VcpkgTriplets = @($Architecture.ToLower())
+if ($Architecture -eq "x64") {
+    $VcpkgTriplets += "x64-windows"
+} elseif ($Architecture -eq "Win32") {
+    $VcpkgTriplets += "x86-windows"
+}
+
+foreach ($Triplet in ($VcpkgTriplets | Select-Object -Unique)) {
+    $CandidateBin = Join-Path $VcpkgDir "installed\$Triplet\bin"
+    if (Test-Path $CandidateBin) {
+        $RuntimeDllDirs += $CandidateBin
+    }
+}
 
 $CopiedCount = 0
-foreach ($Dll in $RuntimeDlls) {
-    $DllSrc = Join-Path $VcpkgBin $Dll
-    if (Test-Path $DllSrc) {
-        Copy-Item -Force $DllSrc $ObsPluginBin
+foreach ($RuntimeDllDir in ($RuntimeDllDirs | Select-Object -Unique)) {
+    Write-Host "Copying DLLs from: $RuntimeDllDir"
+    $RuntimeDlls = Get-ChildItem -Path $RuntimeDllDir -Filter "*.dll" -File -ErrorAction SilentlyContinue
+    foreach ($Dll in $RuntimeDlls) {
+        Copy-Item -Force $Dll.FullName $ObsPluginBin
         $CopiedCount++
     }
 }
-Write-Host "Copied $CopiedCount runtime DLL dependencies from vcpkg."
+
+if ($CopiedCount -eq 0) {
+    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says obs-titles failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
+} else {
+    Write-Host "Copied $CopiedCount runtime DLL dependencies."
+}
+
+$ExpectedDlls = @(
+    "obs-titles.dll",
+    "cairo.dll",
+    "pango-1.0.dll",
+    "pangocairo-1.0.dll"
+)
+$MissingExpectedDlls = @()
+foreach ($Dll in $ExpectedDlls) {
+    if (-not (Test-Path (Join-Path $ObsPluginBin $Dll))) {
+        $MissingExpectedDlls += $Dll
+    }
+}
+if ($MissingExpectedDlls.Count -gt 0) {
+    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that obs-titles failed to load."
+}
+
+Write-Host "`nInstalled OBS plugin layout:"
+Write-Host "  $ObsPluginRoot"
+Write-Host "  $ObsPluginBin\obs-titles.dll"
+Write-Host "  $ObsPluginData\en-US.ini"
 Write-Host "`n=== obs-titles built and installed successfully! ==="

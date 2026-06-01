@@ -117,10 +117,19 @@ After install, OBS should see this structure:
 ```text
 C:\ProgramData\obs-studio\plugins\obs-titles\
 ├── bin\64bit\obs-titles.dll
+├── bin\64bit\cairo.dll
+├── bin\64bit\pango-1.0.dll
+├── bin\64bit\pangocairo-1.0.dll
+├── bin\64bit\Qt6Core.dll / Qt5Core.dll
+├── bin\64bit\Qt6Gui.dll / Qt5Gui.dll
+├── bin\64bit\Qt6Widgets.dll / Qt5Widgets.dll
 └── data\locale\en-US.ini
 ```
 
-Use `-InstallRoot` if you need a portable OBS/custom plugin root instead.
+Use `-InstallRoot` if you need a portable OBS/custom plugin root instead. If
+OBS reports that `obs-titles` failed to load, first verify that the dependency
+DLLs above are beside `obs-titles.dll`; a successful compile is not enough for
+Windows to load the plugin at OBS startup.
 
 ---
 
