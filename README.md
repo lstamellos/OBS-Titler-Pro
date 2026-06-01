@@ -82,15 +82,28 @@ cmake -B build \
 cmake --build build
 ```
 
-### Windows (MSYS2 / vcpkg)
+### Windows (Visual Studio / vcpkg)
+
+Install Cairo, Pango, and Qt with vcpkg, then point the build at either an OBS
+plugin dependencies package or an OBS Studio install tree with `OBS_SDK_DIR` (or
+`-DOBS_SDK_DIR=...`). The helper script also accepts `-ObsSdkDir` and honours
+`VCPKG_ROOT`, `OBS_SDK_DIR`, and `OBS_STUDIO_DIR`.
 
 ```bat
-vcpkg install cairo pango[fontconfig] obs-studio qt6-base
+vcpkg install cairo pango[fontconfig] qt6-base
 
+set OBS_SDK_DIR=C:\path\to\plugin-deps-or-obs-studio
 cmake -B build -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DOBS_SDK_DIR=%OBS_SDK_DIR%
 
 cmake --build build --config Release
+```
+
+Or run the convenience script:
+
+```powershell
+.\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio
 ```
 
 ---

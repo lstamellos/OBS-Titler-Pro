@@ -25,6 +25,11 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <vector>
+
+namespace {
+constexpr double kPi = 3.141592653589793238462643383279502884;
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
@@ -78,15 +83,13 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     double py = layer.pos_y.evaluate(t);
     double sx = layer.scale_x.evaluate(t);
     double sy = layer.scale_y.evaluate(t);
-    double rot = layer.rotation.evaluate(t) * M_PI / 180.0;
+    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
 
     cairo_save(cr);
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    cairo_set_global_alpha(cr, alpha);  /* not a real Cairo API – handled below */
-
     /* Build Pango layout */
     PangoLayout *layout = pango_cairo_create_layout(cr);
 
@@ -148,7 +151,7 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     double py = layer.pos_y.evaluate(t);
     double sx = layer.scale_x.evaluate(t);
     double sy = layer.scale_y.evaluate(t);
-    double rot = layer.rotation.evaluate(t) * M_PI / 180.0;
+    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
 
     double w = layer.rect_width  * sx;
@@ -164,10 +167,10 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
 
     if (r > 0.0) {
         cairo_new_sub_path(cr);
-        cairo_arc(cr, r,     r,     r,  M_PI,       3*M_PI/2);
-        cairo_arc(cr, w-r,   r,     r,  3*M_PI/2,   2*M_PI);
-        cairo_arc(cr, w-r,   h-r,   r,  0,          M_PI/2);
-        cairo_arc(cr, r,     h-r,   r,  M_PI/2,     M_PI);
+        cairo_arc(cr, r,     r,     r,  kPi,       3*kPi/2);
+        cairo_arc(cr, w-r,   r,     r,  3*kPi/2,   2*kPi);
+        cairo_arc(cr, w-r,   h-r,   r,  0,          kPi/2);
+        cairo_arc(cr, r,     h-r,   r,  kPi/2,     kPi);
         cairo_close_path(cr);
     } else {
         cairo_rectangle(cr, 0, 0, w, h);
