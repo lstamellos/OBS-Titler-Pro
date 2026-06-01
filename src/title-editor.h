@@ -111,6 +111,7 @@ public:
     void set_title(std::shared_ptr<Title> t);
     void set_playhead(double t);
     void set_selected_layer(const std::string &lid);
+    void refresh_preview();
 
 signals:
     void layer_clicked(const std::string &layer_id);
@@ -249,6 +250,17 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+    QPushButton     *btn_text_color_ = nullptr;
+
+    /* Rectangle/Image geometry controls */
+    QDoubleSpinBox  *spn_rect_w_   = nullptr;
+    QDoubleSpinBox  *spn_rect_h_   = nullptr;
+    QDoubleSpinBox  *spn_corner_   = nullptr;
+    QPushButton     *btn_fill_color_ = nullptr;
+
+    /* Image controls */
+    QLineEdit       *txt_image_path_ = nullptr;
+    QPushButton     *btn_browse_image_ = nullptr;
 
     /* Rectangle/Image geometry controls */
     QDoubleSpinBox  *spn_rect_w_   = nullptr;

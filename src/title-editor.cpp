@@ -49,6 +49,34 @@ static const QColor C_RULER    { 0x1e1e1e };
 static const QColor C_KF_DOT   { 0xf0a020 };
 static const QColor C_PLAYHEAD { 0xff4444 };
 
+
+static QColor color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xFF,
+                  (argb >> 8) & 0xFF,
+                  argb & 0xFF,
+                  (argb >> 24) & 0xFF);
+}
+
+static uint32_t argb_from_color(const QColor &color)
+{
+    return ((uint32_t)color.alpha() << 24) |
+           ((uint32_t)color.red() << 16) |
+           ((uint32_t)color.green() << 8) |
+           (uint32_t)color.blue();
+}
+
+static void style_color_button(QPushButton *button, uint32_t argb)
+{
+    QColor c = color_from_argb(argb);
+    button->setText(c.name(QColor::HexArgb));
+    button->setStyleSheet(QString(
+        "QPushButton{color:%1;background:%2;border:1px solid #555;"
+        "border-radius:3px;padding:3px 8px;}")
+        .arg(c.lightness() < 128 ? "#fff" : "#000")
+        .arg(c.name(QColor::HexArgb)));
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor
  * ══════════════════════════════════════════════════════════════════ */
@@ -167,6 +195,7 @@ void TitleEditor::build_ui()
                 title_->add_layer(l);
                 layers_->refresh();
                 on_layer_selected(l->id);
+                canvas_->refresh_preview();
                 TitleDataStore::instance().notify_change();
                 TitleDataStore::instance().save();
             });
@@ -183,6 +212,7 @@ void TitleEditor::build_ui()
                 else
                     props_->set_layer(nullptr, playhead_);
 
+                canvas_->refresh_preview();
                 TitleDataStore::instance().notify_change();
                 TitleDataStore::instance().save();
             });
@@ -192,7 +222,7 @@ void TitleEditor::build_ui()
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
                     layer->visible = visible;
-                    canvas_->update();
+                    canvas_->refresh_preview();
                     TitleDataStore::instance().notify_change();
                     TitleDataStore::instance().save();
                 }
@@ -361,7 +391,7 @@ void TitleEditor::on_playhead_changed(double t)
 void TitleEditor::on_title_modified()
 {
     if (title_) setWindowTitle("Title Editor  ·  modified");
-    canvas_->update();
+    canvas_->refresh_preview();
     TitleDataStore::instance().notify_change();
     TitleDataStore::instance().save();
 }
@@ -390,6 +420,12 @@ void CanvasPreview::set_playhead(double t)
 void CanvasPreview::set_selected_layer(const std::string &lid)
 {
     sel_layer_id_ = lid; update();
+}
+
+void CanvasPreview::refresh_preview()
+{
+    dirty_ = true;
+    update();
 }
 
 void CanvasPreview::render_to_pixmap()
@@ -434,10 +470,7 @@ void CanvasPreview::render_to_pixmap()
         p.scale(sx, sy);
 
         if (layer->type == LayerType::SolidRect) {
-            QColor fc( (layer->fill_color >> 16) & 0xFF,
-                       (layer->fill_color >>  8) & 0xFF,
-                       (layer->fill_color >>  0) & 0xFF,
-                       (layer->fill_color >> 24) & 0xFF );
+            QColor fc = color_from_argb(layer->fill_color);
             double rw = layer->rect_width;
             double rh = layer->rect_height;
             QRectF r(-rw/2.0, -rh/2.0, rw, rh);
@@ -463,10 +496,7 @@ void CanvasPreview::render_to_pixmap()
         }
 
         if (layer->type == LayerType::Text) {
-            QColor tc( (layer->text_color >> 16) & 0xFF,
-                       (layer->text_color >>  8) & 0xFF,
-                       (layer->text_color >>  0) & 0xFF,
-                       (layer->text_color >> 24) & 0xFF );
+            QColor tc = color_from_argb(layer->text_color);
             QFont f(QString::fromStdString(layer->font_family));
             f.setPixelSize(layer->font_size);
             f.setBold(layer->font_bold);
@@ -937,6 +967,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bi_row->addWidget(chk_italic_);
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
+    btn_text_color_ = new QPushButton(inner);
+    txfl->addRow("Color:", btn_text_color_);
     vl->addWidget(text_box_);
 
     /* ── Rectangle ── */
@@ -950,6 +982,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     rfl->addRow("Width:", spn_rect_w_);
     rfl->addRow("Height:", spn_rect_h_);
     rfl->addRow("Corner:", spn_corner_);
+    btn_fill_color_ = new QPushButton(inner);
+    rfl->addRow("Color:", btn_fill_color_);
     vl->addWidget(rect_box_);
 
     /* ── Image ── */
@@ -1010,6 +1044,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, emit_change](bool v){
                 if (layer_) { layer_->font_italic = v; emit_change(); }
             });
+    connect(btn_text_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor initial = color_from_argb(layer_->text_color);
+                QColor picked = QColorDialog::getColor(initial, this, "Text Color",
+                                                        QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->text_color = argb_from_color(picked);
+                style_color_button(btn_text_color_, layer_->text_color);
+                emit_change();
+            });
     connect(spn_rect_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
                 if (layer_) { layer_->rect_width = (float)v; emit_change(); }
@@ -1021,6 +1066,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(spn_corner_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
                 if (layer_) { layer_->corner_radius = (float)v; emit_change(); }
+            });
+    connect(btn_fill_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor initial = color_from_argb(layer_->fill_color);
+                QColor picked = QColorDialog::getColor(initial, this, "Fill Color",
+                                                        QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->fill_color = argb_from_color(picked);
+                style_color_button(btn_fill_color_, layer_->fill_color);
+                emit_change();
             });
     connect(txt_image_path_, &QLineEdit::textChanged,
             this, [this, emit_change](const QString &path){
@@ -1070,6 +1126,8 @@ void PropertiesPanel::load_values()
         spn_opacity_->setValue(1.0);
         txt_content_->clear();
         txt_image_path_->clear();
+        style_color_button(btn_text_color_, 0xFFFFFFFF);
+        style_color_button(btn_fill_color_, 0xFF222222);
         spn_rect_w_->setValue(1.0);
         spn_rect_h_->setValue(1.0);
         spn_corner_->setValue(0.0);
@@ -1087,8 +1145,11 @@ void PropertiesPanel::load_values()
     rect_box_->setVisible(is_rect || is_image);
     rect_box_->setTitle(is_image ? "Image Size" : "Rectangle");
     spn_corner_->setVisible(is_rect);
+    btn_fill_color_->setVisible(is_rect);
     if (auto *form = qobject_cast<QFormLayout *>(rect_box_->layout())) {
         if (auto *label = form->labelForField(spn_corner_))
+            label->setVisible(is_rect);
+        if (auto *label = form->labelForField(btn_fill_color_))
             label->setVisible(is_rect);
     }
     image_box_->setVisible(is_image);
@@ -1110,6 +1171,8 @@ void PropertiesPanel::load_values()
     spn_rect_h_->setValue(layer_->rect_height);
     spn_corner_->setValue(layer_->corner_radius);
     txt_image_path_->setText(QString::fromStdString(layer_->image_path));
+    style_color_button(btn_text_color_, layer_->text_color);
+    style_color_button(btn_fill_color_, layer_->fill_color);
 
     txt_content_->setText(QString::fromStdString(layer_->text_content));
     int fi = cmb_font_->findText(QString::fromStdString(layer_->font_family));
