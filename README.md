@@ -26,7 +26,7 @@ obs-titles-plugin/
 | Component | OBS Integration | Purpose |
 |---|---|---|
 | `TitleSource` | `obs_source_type INPUT` | Renders a title to the OBS video mix per-frame via Cairo → `gs_texture` |
-| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with scene-add button |
+| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with blank-title creation, Titler-style templates, and scene-add button |
 | `TitleEditor` | `QDialog` (non-modal) | Full AE-style editor with canvas, layer stack, timeline, properties |
 | `TitleDataStore` | Singleton | Owns all `Title` objects; serialises to `obs-titles/titles.json` |
 
@@ -63,11 +63,11 @@ cmake -B build -G Ninja \
 # 3. Build
 cmake --build build
 
-# 4. Install (OBS plugin path)
-sudo cmake --install build
-# or symlink:
-ln -s $(pwd)/build/obs-plugins/obs-titles.so \
-      ~/.config/obs-studio/plugins/obs-titles/bin/64bit/obs-titles.so
+# 4. Install to OBS' per-user plugin folder
+cmake --install build --prefix ~/.config/obs-studio/plugins
+# or copy/symlink the staged build tree:
+mkdir -p ~/.config/obs-studio/plugins
+cp -R build/obs-titles ~/.config/obs-studio/plugins/
 ```
 
 ### macOS
@@ -82,16 +82,66 @@ cmake -B build \
 cmake --build build
 ```
 
-### Windows (MSYS2 / vcpkg)
+The standalone build stages a directly copyable plugin folder at
+`build/obs-titles`, with the binary under `bin/<arch>` and locale files under
+`data/locale`.
+
+### Windows (Visual Studio / vcpkg)
+
+Install Cairo, Pango, and Qt with vcpkg, then point the build at either an OBS
+plugin dependencies package or an OBS Studio install tree with `OBS_SDK_DIR` (or
+`-DOBS_SDK_DIR=...`). The helper script also accepts `-ObsSdkDir` and honours
+`VCPKG_ROOT`, `OBS_SDK_DIR`, `OBS_STUDIO_DIR`, and `OBS_PLUGINS_PATH`. By
+default, the helper installs to OBS' recommended per-machine plugin root,
+`C:\ProgramData\obs-studio\plugins`.
 
 ```bat
-vcpkg install cairo pango[fontconfig] obs-studio qt6-base
+vcpkg install cairo pango[fontconfig] qt6-base
 
+set OBS_SDK_DIR=C:\path\to\plugin-deps-or-obs-studio
 cmake -B build -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DOBS_SDK_DIR=%OBS_SDK_DIR%
 
 cmake --build build --config Release
 ```
+
+Or run the convenience script:
+
+```powershell
+.\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio
+```
+
+After install, OBS should see this structure:
+
+```text
+C:\ProgramData\obs-studio\plugins\obs-titles\
+├── bin\64bit\obs-titles.dll
+├── bin\64bit\cairo.dll
+├── bin\64bit\pango-1.0.dll
+├── bin\64bit\pangocairo-1.0.dll
+├── bin\64bit\Qt6Core.dll / Qt5Core.dll
+├── bin\64bit\Qt6Gui.dll / Qt5Gui.dll
+├── bin\64bit\Qt6Widgets.dll / Qt5Widgets.dll
+└── data\locale\en-US.ini
+```
+
+Use `-InstallRoot` if you need a portable OBS/custom plugin root instead. If
+OBS reports that `obs-titles` failed to load, first verify that the dependency
+DLLs above are beside `obs-titles.dll`; a successful compile is not enough for
+Windows to load the plugin at OBS startup.
+
+---
+
+## Titler Workflow
+
+The dock is designed around a Titler-style flow:
+
+1. Open the **Titles** dock.
+2. Click **Templates** and choose **Lower Third**, **Centered Title**, or **Ticker / Strap**.
+3. Enter the starter text; the editor opens with editable text and shape layers.
+4. Adjust text/position/style in the editor. Changes auto-save and update the title store.
+5. Click **▶ Scene** in the dock to add the selected title source to the active OBS scene.
 
 ---
 

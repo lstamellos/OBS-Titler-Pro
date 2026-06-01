@@ -149,6 +149,7 @@ struct Title {
 class TitleDataStore {
 public:
     static TitleDataStore &instance();
+    static std::string make_uuid();
 
     /* CRUD */
     std::shared_ptr<Title> create_title(const std::string &name = "New Title");
@@ -174,5 +175,4 @@ private:
     std::vector<ChangeCallback>          change_cbs_;
 
     static std::string data_path();
-    static std::string make_uuid();
 };
