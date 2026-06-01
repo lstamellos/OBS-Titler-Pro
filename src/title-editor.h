@@ -188,6 +188,7 @@ public:
 signals:
     void layer_selected(const std::string &layer_id);
     void layer_visibility_changed(const std::string &layer_id, bool v);
+    void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
     void delete_layer_requested(const std::string &layer_id);
@@ -240,12 +241,15 @@ protected:
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
     void contextMenuEvent(QContextMenuEvent *ev) override;
+    void wheelEvent(QWheelEvent *ev) override;
 
 private:
     double x_to_time(int x) const;
     int    time_to_x(double t) const;
     int    ruler_height() const { return 24; }
-    int    row_height()   const { return 22; }
+    int    row_height()   const { return 24; }
+    double snap_time(double t) const;
+    void   clamp_scroll();
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
