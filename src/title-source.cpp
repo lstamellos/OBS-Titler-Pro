@@ -19,6 +19,8 @@
 
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
+#include <QImage>
+#include <QString>
 
 #include <memory>
 #include <string>
@@ -181,6 +183,42 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     cairo_restore(cr);
 }
 
+
+static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
+{
+    if (layer.image_path.empty()) return;
+
+    QImage image(QString::fromStdString(layer.image_path));
+    if (image.isNull()) return;
+
+    QImage argb = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+    double px = layer.pos_x.evaluate(t);
+    double py = layer.pos_y.evaluate(t);
+    double sx = layer.scale_x.evaluate(t);
+    double sy = layer.scale_y.evaluate(t);
+    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
+    double alpha = layer.opacity.evaluate(t);
+    double w = std::max(1.0f, layer.rect_width);
+    double h = std::max(1.0f, layer.rect_height);
+
+    cairo_surface_t *img_surface = cairo_image_surface_create_for_data(
+        argb.bits(), CAIRO_FORMAT_ARGB32,
+        argb.width(), argb.height(), argb.bytesPerLine());
+
+    cairo_save(cr);
+    cairo_translate(cr, px, py);
+    cairo_rotate(cr, rot);
+    cairo_scale(cr, sx * (w / argb.width()), sy * (h / argb.height()));
+    cairo_set_source_surface(cr, img_surface,
+                             -argb.width() / 2.0,
+                             -argb.height() / 2.0);
+    cairo_paint_with_alpha(cr, alpha);
+    cairo_restore(cr);
+
+    cairo_surface_destroy(img_surface);
+}
+
 /* Composite a full title frame into pixel_buf */
 static void render_title_frame(TitleSourceData *data,
                                 const Title &title, double t)
@@ -230,6 +268,9 @@ static void render_title_frame(TitleSourceData *data,
             break;
         case LayerType::SolidRect:
             render_layer_rect(cr, *layer, lt);
+            break;
+        case LayerType::Image:
+            render_layer_image(cr, *layer, lt);
             break;
         default:
             break;
