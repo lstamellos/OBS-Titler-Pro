@@ -19,6 +19,9 @@
 #include <QSplitter>
 #include <QToolBar>
 #include <QAction>
+#include <QIcon>
+#include <QStringList>
+#include <QStyle>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -55,6 +58,16 @@ static const QColor C_RULER    { 0x1e1e1e };
 static const QColor C_KF_DOT   { 0xf0a020 };
 static const QColor C_PLAYHEAD { 0xff4444 };
 
+
+
+static QIcon obs_icon(QWidget *widget, const QStringList &names, QStyle::StandardPixmap fallback)
+{
+    for (const QString &name : names) {
+        QIcon icon = QIcon::fromTheme(name);
+        if (!icon.isNull()) return icon;
+    }
+    return widget ? widget->style()->standardIcon(fallback) : QIcon();
+}
 
 static QColor color_from_argb(uint32_t argb)
 {
@@ -451,10 +464,10 @@ void TitleEditor::build_toolbar()
         "QToolButton:hover { background:#333; border-radius:3px; }"
         "QToolButton:pressed { background:#0078d4; }");
 
-    act_rew_ = new QAction("⏮", this);
-    act_prev_kf_ = new QAction("◆◀", this);
-    act_play_ = new QAction("▶", this);
-    act_next_kf_ = new QAction("▶◆", this);
+    act_rew_ = new QAction(obs_icon(this, {"media-skip-backward", "go-first"}, QStyle::SP_MediaSkipBackward), "⏮", this);
+    act_prev_kf_ = new QAction(obs_icon(this, {"go-previous", "media-seek-backward"}, QStyle::SP_MediaSeekBackward), "◆◀", this);
+    act_play_ = new QAction(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay), "▶", this);
+    act_next_kf_ = new QAction(obs_icon(this, {"go-next", "media-seek-forward"}, QStyle::SP_MediaSeekForward), "▶◆", this);
 
     connect(act_rew_, &QAction::triggered, this, &TitleEditor::rewind);
     connect(act_prev_kf_, &QAction::triggered, this, &TitleEditor::previous_keyframe);
@@ -474,6 +487,8 @@ void TitleEditor::build_toolbar()
 
     auto *zoom_in  = new QPushButton("+", toolbar_);
     auto *zoom_out = new QPushButton("−", toolbar_);
+    zoom_in->setIcon(obs_icon(this, {"zoom-in"}, QStyle::SP_ArrowUp));
+    zoom_out->setIcon(obs_icon(this, {"zoom-out"}, QStyle::SP_ArrowDown));
     zoom_in->setFixedWidth(22);
     zoom_out->setFixedWidth(22);
     zoom_in->setStyleSheet("color:#ccc; background:#2a2a2a; border:none; border-radius:2px;");
@@ -484,7 +499,8 @@ void TitleEditor::build_toolbar()
     toolbar_->addSeparator();
 
     /* Save button */
-    auto *btn_save = new QPushButton("💾 Save", toolbar_);
+    auto *btn_save = new QPushButton("Save", toolbar_);
+    btn_save->setIcon(obs_icon(this, {"document-save"}, QStyle::SP_DialogSaveButton));
     btn_save->setStyleSheet(
         "QPushButton { color:#fff; background:#0078d4; border:none;"
         "  border-radius:3px; padding:4px 10px; }"
@@ -503,6 +519,7 @@ void TitleEditor::open_title(const std::string &tid)
     play_timer_->stop();
     playing_ = false;
     act_play_->setText("▶");
+    act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
     playhead_ = 0.0;
 
     title_ = TitleDataStore::instance().get_title(tid);
@@ -536,10 +553,12 @@ void TitleEditor::play_pause()
     playing_ = !playing_;
     if (playing_) {
         act_play_->setText("⏸");
+        act_play_->setIcon(obs_icon(this, {"media-playback-pause"}, QStyle::SP_MediaPause));
         playback_clock_.restart();
         play_timer_->start();
     } else {
         act_play_->setText("▶");
+        act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
         play_timer_->stop();
     }
 }
@@ -1088,9 +1107,13 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     /* header buttons */
     auto *hdr = new QHBoxLayout();
     btn_add_text_  = new QPushButton("T+",    this);
+    btn_add_text_->setIcon(obs_icon(this, {"insert-text", "format-text-bold"}, QStyle::SP_FileIcon));
     btn_add_rect_  = new QPushButton("▭+",    this);
+    btn_add_rect_->setIcon(obs_icon(this, {"draw-rectangle", "insert-shape"}, QStyle::SP_FileDialogNewFolder));
     btn_add_image_ = new QPushButton("Img+",  this);
+    btn_add_image_->setIcon(obs_icon(this, {"insert-image", "image-x-generic"}, QStyle::SP_FileIcon));
     btn_del_       = new QPushButton("✕",     this);
+    btn_del_->setIcon(obs_icon(this, {"edit-delete", "user-trash"}, QStyle::SP_TrashIcon));
     for (auto *b : {btn_add_text_, btn_add_rect_, btn_add_image_, btn_del_}) {
         b->setFixedWidth(30);
         b->setStyleSheet("QPushButton{color:#ccc;background:#2a2a2a;border:none;"
@@ -1603,66 +1626,59 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     /* ── Connect signals → property_changed ── */
     auto emit_change = [this]() { if (!loading_values_) emit property_changed(); };
+    auto can_edit = [this]() { return layer_ && !loading_values_; };
     auto local_time = [this]() {
         return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
                                    std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
     };
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (layer_) { set_animated_value(layer_->pos_x, local_time(), v); emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (can_edit()) { set_animated_value(layer_->pos_x, local_time(), v); emit_change(); }
             });
     connect(spn_py_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (layer_) { set_animated_value(layer_->pos_y, local_time(), v); emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (can_edit()) { set_animated_value(layer_->pos_y, local_time(), v); emit_change(); }
             });
     connect(spn_rot_,      QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (layer_) { set_animated_value(layer_->rotation, local_time(), v); emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (can_edit()) { set_animated_value(layer_->rotation, local_time(), v); emit_change(); }
             });
     connect(spn_opacity_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (layer_) { set_animated_value(layer_->opacity, local_time(), v); emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (can_edit()) { set_animated_value(layer_->opacity, local_time(), v); emit_change(); }
             });
     connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (layer_) { layer_->origin_x = (float)v; set_animated_value(layer_->origin_x_prop, local_time(), v); emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (can_edit()) { layer_->origin_x = (float)v; set_animated_value(layer_->origin_x_prop, local_time(), v); emit_change(); }
             });
     connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (layer_) { layer_->origin_y = (float)v; set_animated_value(layer_->origin_y_prop, local_time(), v); emit_change(); }
-            });
-    connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->origin_x = (float)v; layer_->origin_x_prop.static_value = v; emit_change(); }
-            });
-    connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->origin_y = (float)v; layer_->origin_y_prop.static_value = v; emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (can_edit()) { layer_->origin_y = (float)v; set_animated_value(layer_->origin_y_prop, local_time(), v); emit_change(); }
             });
     connect(txt_content_, &QLineEdit::textChanged,
-            this, [this, emit_change](const QString &s){
-                if (layer_) { layer_->text_content = s.toStdString(); emit_change(); }
+            this, [this, can_edit, emit_change](const QString &s){
+                if (can_edit()) { layer_->text_content = s.toStdString(); emit_change(); }
             });
     connect(cmb_font_, &QComboBox::currentTextChanged,
-            this, [this, emit_change](const QString &s){
-                if (layer_) { layer_->font_family = s.toStdString(); emit_change(); }
+            this, [this, can_edit, emit_change](const QString &s){
+                if (can_edit()) { layer_->font_family = s.toStdString(); emit_change(); }
             });
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this, emit_change](int v){
-                if (layer_) { layer_->font_size = v; emit_change(); }
+            this, [this, can_edit, emit_change](int v){
+                if (can_edit()) { layer_->font_size = v; emit_change(); }
             });
     connect(chk_bold_, &QCheckBox::toggled,
-            this, [this, emit_change](bool v){
-                if (layer_) { layer_->font_bold = v; emit_change(); }
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) { layer_->font_bold = v; emit_change(); }
             });
     connect(chk_italic_, &QCheckBox::toggled,
-            this, [this, emit_change](bool v){
-                if (layer_) { layer_->font_italic = v; emit_change(); }
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) { layer_->font_italic = v; emit_change(); }
             });
     connect(btn_text_color_, &QPushButton::clicked,
-            this, [this, local_time, emit_change]() {
-                if (!layer_) return;
+            this, [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_text_color(*layer_, local_time()));
                 QColor picked = QColorDialog::getColor(initial, this, "Text Color",
                                                         QColorDialog::ShowAlphaChannel);
@@ -1673,8 +1689,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (!layer_) return;
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (!can_edit()) return;
                 double t = local_time();
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
@@ -1689,8 +1705,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(spn_layer_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, local_time, emit_change](double v){
-                if (!layer_) return;
+            this, [this, can_edit, local_time, emit_change](double v){
+                if (!can_edit()) return;
                 double t = local_time();
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
@@ -1705,12 +1721,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(spn_rect_corner_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->corner_radius = (float)v; emit_change(); }
+            this, [this, can_edit, emit_change](double v){
+                if (can_edit()) { layer_->corner_radius = (float)v; emit_change(); }
             });
     connect(btn_fill_color_, &QPushButton::clicked,
-            this, [this, local_time, emit_change]() {
-                if (!layer_) return;
+            this, [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_fill_color(*layer_, local_time()));
                 QColor picked = QColorDialog::getColor(initial, this, "Fill Color",
                                                         QColorDialog::ShowAlphaChannel);
@@ -1721,16 +1737,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(edit_image_path_, &QLineEdit::textChanged,
-            this, [this, emit_change](const QString &path){
-                if (layer_) { layer_->image_path = path.toStdString(); emit_change(); }
+            this, [this, can_edit, emit_change](const QString &path){
+                if (can_edit()) { layer_->image_path = path.toStdString(); emit_change(); }
             });
     connect(chk_lock_aspect_, &QCheckBox::toggled,
-            this, [this, emit_change](bool v){
-                if (layer_) { layer_->lock_aspect_ratio = v; emit_change(); }
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) { layer_->lock_aspect_ratio = v; emit_change(); }
             });
     connect(btn_pick_image_, &QPushButton::clicked,
-            this, [this, local_time, emit_change]() {
-                if (!layer_) return;
+            this, [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
                 QString path = QFileDialog::getOpenFileName(
                     this, "Choose Image",
                     QString::fromStdString(layer_->image_path),
@@ -1749,56 +1765,56 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
 
-    connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->pos_x, local_time(), spn_px_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->pos_y, local_time(), spn_py_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_rotation_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_rotation_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->rotation, local_time(), spn_rot_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_opacity_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_opacity_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->opacity, local_time(), spn_opacity_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->origin_x_prop, local_time(), spn_origin_x_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->origin_y_prop, local_time(), spn_origin_y_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_width_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->box_width, local_time(), spn_layer_w_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_height_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_height_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         toggle_keyframe(layer_->box_height, local_time(), spn_layer_h_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_text_color_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_text_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         double t = local_time();
         uint32_t color = eval_text_color(*layer_, t);
         if (any_keyframe_at_time({&layer_->text_color_a, &layer_->text_color_r,
@@ -1816,8 +1832,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
-    connect(btn_kf_fill_color_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
-        if (!layer_) return;
+    connect(btn_kf_fill_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
         double t = local_time();
         uint32_t color = eval_fill_color(*layer_, t);
         if (any_keyframe_at_time({&layer_->fill_color_a, &layer_->fill_color_r,
