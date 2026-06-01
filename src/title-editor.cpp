@@ -1632,6 +1632,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, local_time, emit_change](double v){
                 if (layer_) { layer_->origin_y = (float)v; set_animated_value(layer_->origin_y_prop, local_time(), v); emit_change(); }
             });
+    connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->origin_x = (float)v; layer_->origin_x_prop.static_value = v; emit_change(); }
+            });
+    connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->origin_y = (float)v; layer_->origin_y_prop.static_value = v; emit_change(); }
+            });
     connect(txt_content_, &QLineEdit::textChanged,
             this, [this, emit_change](const QString &s){
                 if (layer_) { layer_->text_content = s.toStdString(); emit_change(); }
