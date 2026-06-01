@@ -279,6 +279,8 @@ static json layer_to_json(const Layer &l)
     j["type"]     = (int)l.type;
     j["visible"]  = l.visible;
     j["locked"]   = l.locked;
+    j["properties_expanded"] = l.properties_expanded;
+    j["parent_id"] = l.parent_id;
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
 
@@ -331,6 +333,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     l->type     = (LayerType)j.value("type", 0);
     l->visible  = j.value("visible",  true);
     l->locked   = j.value("locked",   false);
+    l->properties_expanded = j.value("properties_expanded", false);
+    l->parent_id = j.value("parent_id", std::string());
     l->in_time  = j.value("in_time",  0.0);
     l->out_time = j.value("out_time", 5.0);
 

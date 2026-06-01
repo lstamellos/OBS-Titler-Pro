@@ -39,6 +39,7 @@
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QPointF>
+#include <QPoint>
 #include <QRectF>
 #include <memory>
 
@@ -189,6 +190,8 @@ signals:
     void layer_selected(const std::string &layer_id);
     void layer_visibility_changed(const std::string &layer_id, bool v);
     void layer_lock_changed(const std::string &layer_id, bool locked);
+    void layer_expand_changed(const std::string &layer_id, bool expanded);
+    void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
     void delete_layer_requested(const std::string &layer_id);
@@ -246,15 +249,22 @@ protected:
 private:
     double x_to_time(int x) const;
     int    time_to_x(double t) const;
-    int    ruler_height() const { return 24; }
+    int    ruler_height() const { return 72; }
     int    row_height()   const { return 24; }
     double snap_time(double t) const;
     void   clamp_scroll();
+    bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
+                        AnimatedProperty **prop, int *kf_idx, int *row_idx) const;
+
+    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut };
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
     double playhead_  = 0.0;
-    bool   dragging_  = false;
+    DragMode drag_mode_ = DragMode::None;
+    std::string drag_layer_id_;
+    std::string drag_prop_name_;
+    int drag_keyframe_index_ = -1;
     double pixels_per_sec_ = 80.0;
     int    scroll_x_       = 0;
 };

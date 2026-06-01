@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <vector>
 #include <initializer_list>
+#include <set>
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Dark AE-style palette constants                                   */
@@ -81,6 +82,23 @@ static double snap_to_obs_frame(double t)
 {
     double fd = obs_frame_duration();
     return std::round(t / fd) * fd;
+}
+
+static QString format_timecode(double t)
+{
+    double fps_d = obs_frame_rate();
+    int fps = std::max(1, (int)std::round(fps_d));
+    int total_frames = std::max(0, (int)std::round(t * fps_d));
+    int frames = total_frames % fps;
+    int total_seconds = total_frames / fps;
+    int seconds = total_seconds % 60;
+    int minutes = (total_seconds / 60) % 60;
+    int hours = total_seconds / 3600;
+    return QString("%1:%2:%3:%4")
+        .arg(hours, 2, 10, QChar('0'))
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'))
+        .arg(frames, 2, 10, QChar('0'));
 }
 
 static QColor layer_color(const Layer &layer, int row)
@@ -313,6 +331,66 @@ static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
             &layer.fill_color_g, &layer.fill_color_b};
 }
 
+static QString property_label(const std::string &name)
+{
+    if (name == "pos_x" || name == "pos_y") return "Position";
+    if (name == "scale_x" || name == "scale_y") return "Scale";
+    if (name == "box_width" || name == "box_height") return "Size";
+    if (name == "origin_x" || name == "origin_y") return "Origin";
+    if (name == "text_color_a" || name == "text_color_r" ||
+        name == "text_color_g" || name == "text_color_b") return "Text Color";
+    if (name == "fill_color_a" || name == "fill_color_r" ||
+        name == "fill_color_g" || name == "fill_color_b") return "Fill Color";
+    if (name == "rotation") return "Rotation";
+    if (name == "opacity") return "Opacity";
+    return QString::fromStdString(name);
+}
+
+static QString property_value_text(const AnimatedProperty &prop, const Layer &layer)
+{
+    double value = prop.static_value;
+    if (prop.name == "pos_x")
+        return QString("%1,%2").arg(layer.pos_x.static_value, 0, 'f', 1)
+                                .arg(layer.pos_y.static_value, 0, 'f', 1);
+    if (prop.name == "scale_x")
+        return QString("%1,%2%").arg(layer.scale_x.static_value * 100.0, 0, 'f', 1)
+                                 .arg(layer.scale_y.static_value * 100.0, 0, 'f', 1);
+    if (prop.name == "box_width")
+        return QString("%1 × %2").arg(layer.box_width.static_value, 0, 'f', 0)
+                                  .arg(layer.box_height.static_value, 0, 'f', 0);
+    if (prop.name == "origin_x")
+        return QString("%1,%2").arg(layer.origin_x_prop.static_value, 0, 'f', 2)
+                                .arg(layer.origin_y_prop.static_value, 0, 'f', 2);
+    if (prop.name == "opacity") value *= 100.0;
+    return QString::number(value, 'f', prop.name == "opacity" ? 1 : 2);
+}
+
+struct TimelineRow {
+    std::shared_ptr<Layer> layer;
+    AnimatedProperty *prop = nullptr;
+    bool is_property = false;
+};
+
+static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &title)
+{
+    std::vector<TimelineRow> rows;
+    if (!title) return rows;
+    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
+        auto layer = *it;
+        rows.push_back({layer, nullptr, false});
+        if (!layer->properties_expanded) continue;
+        std::set<std::string> seen;
+        for (auto *prop : timeline_properties(*layer)) {
+            if (!prop->is_animated()) continue;
+            QString label = property_label(prop->name);
+            std::string key = label.toStdString();
+            if (seen.insert(key).second)
+                rows.push_back({layer, prop, true});
+        }
+    }
+    return rows;
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor
  * ══════════════════════════════════════════════════════════════════ */
@@ -511,6 +589,28 @@ void TitleEditor::build_ui()
                 }
             });
 
+    connect(layers_, &LayerStack::layer_expand_changed,
+            this, [this](const std::string &lid, bool expanded) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->properties_expanded = expanded;
+                    layers_->refresh();
+                    timeline_->set_title(title_);
+                    TitleDataStore::instance().notify_change();
+                    TitleDataStore::instance().save();
+                }
+            });
+
+    connect(layers_, &LayerStack::layer_parent_changed,
+            this, [this](const std::string &lid, const std::string &parent_id) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->parent_id = parent_id;
+                    TitleDataStore::instance().notify_change();
+                    TitleDataStore::instance().save();
+                }
+            });
+
     connect(timeline_, &TimelineWidget::playhead_changed,
             this, &TitleEditor::on_playhead_changed);
     connect(timeline_, &TimelineWidget::keyframe_easing_changed,
@@ -528,6 +628,7 @@ void TitleEditor::build_ui()
             });
     connect(layers_, &LayerStack::layer_order_changed,
             this, [this]() {
+                layers_->refresh();
                 canvas_->refresh_preview();
                 timeline_->set_title(title_);
                 TitleDataStore::instance().notify_change();
@@ -767,7 +868,7 @@ void TitleEditor::on_playhead_changed(double t)
     }
 
     if (time_lbl_)
-        time_lbl_->setText(QString("%1 s").arg(t, 6, 'f', 3));
+        time_lbl_->setText(QString("%1  (%2 fps)").arg(format_timecode(t)).arg(obs_frame_rate(), 0, 'f', 2));
 }
 
 void TitleEditor::on_title_modified()
@@ -1267,7 +1368,10 @@ void LayerStack::sync_order_from_list()
     std::vector<std::shared_ptr<Layer>> reordered;
     reordered.reserve(title_->layers.size());
     for (int i = list_->count() - 1; i >= 0; --i) {
-        std::string id = list_->item(i)->data(Qt::UserRole).toString().toStdString();
+        auto *item = list_->item(i);
+        if (item->data(Qt::UserRole + 1).toString() == "property")
+            continue;
+        std::string id = item->data(Qt::UserRole).toString().toStdString();
         if (auto layer = title_->find_layer(id))
             reordered.push_back(layer);
     }
@@ -1292,6 +1396,7 @@ void LayerStack::populate()
         auto &l = *it;
         auto *item = new QListWidgetItem();
         item->setData(Qt::UserRole, QString::fromStdString(l->id));
+        item->setData(Qt::UserRole + 1, "layer");
         item->setFlags((item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled |
                         Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled) & ~Qt::ItemIsUserCheckable);
         item->setSizeHint(QSize(0, 24));
@@ -1333,11 +1438,19 @@ void LayerStack::populate()
             emit layer_lock_changed(id, checked);
         });
 
-        QLabel *swatch = new QLabel(row_widget);
-        swatch->setFixedSize(12, 16);
-        swatch->setStyleSheet(QString("background:%1;border:1px solid #111;")
-                                  .arg(layer_color(*l, row).name()));
-        hl->addWidget(swatch);
+        QToolButton *expand = new QToolButton(row_widget);
+        expand->setCheckable(true);
+        expand->setChecked(l->properties_expanded);
+        expand->setText(l->properties_expanded ? "▾" : "▸");
+        expand->setToolTip("Show keyframed properties");
+        expand->setFixedSize(16, 20);
+        expand->setAutoRaise(true);
+        expand->setStyleSheet("QToolButton{color:#aaa;background:transparent;border:none;}"
+                              "QToolButton:hover{background:#353535;border-radius:2px;}");
+        connect(expand, &QToolButton::toggled, this, [this, id = l->id](bool checked) {
+            emit layer_expand_changed(id, checked);
+        });
+        hl->addWidget(expand);
 
         QLabel *idx = new QLabel(QString::number(row + 1), row_widget);
         idx->setFixedWidth(24);
@@ -1348,7 +1461,8 @@ void LayerStack::populate()
         QLabel *type = new QLabel(layer_type_short(l->type), row_widget);
         type->setFixedWidth(18);
         type->setAlignment(Qt::AlignCenter);
-        type->setStyleSheet("background:#202020;border:1px solid #3a3a3a;color:#d8d8d8;font-weight:bold;");
+        type->setStyleSheet(QString("background:%1;border:1px solid #111;color:#fff;font-weight:bold;")
+                                .arg(layer_color(*l, row).name()));
         hl->addWidget(type);
 
         QLabel *name = new QLabel(QString::fromStdString(l->name), row_widget);
@@ -1357,19 +1471,68 @@ void LayerStack::populate()
         hl->addWidget(name, 1);
 
         QLabel *mode = new QLabel("Normal", row_widget);
-        mode->setFixedWidth(46);
+        mode->setFixedWidth(54);
         mode->setStyleSheet("color:#b0b0b0;background:#101010;border-radius:3px;padding-left:4px;");
         hl->addWidget(mode);
 
-        QLabel *parent = new QLabel("None", row_widget);
-        parent->setFixedWidth(58);
-        parent->setStyleSheet("color:#b0b0b0;background:#101010;border-radius:3px;padding-left:4px;");
+        QComboBox *parent = new QComboBox(row_widget);
+        parent->setFixedWidth(86);
+        parent->setStyleSheet("QComboBox{color:#b0b0b0;background:#101010;border:none;border-radius:3px;padding-left:4px;}"
+                              "QComboBox::drop-down{border:none;}");
+        parent->addItem("None", "");
+        for (const auto &candidate : title_->layers) {
+            if (candidate->id == l->id) continue;
+            parent->addItem(QString::fromStdString(candidate->name), QString::fromStdString(candidate->id));
+        }
+        int parent_idx = parent->findData(QString::fromStdString(l->parent_id));
+        parent->setCurrentIndex(parent_idx >= 0 ? parent_idx : 0);
+        connect(parent, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this, id = l->id, parent](int index) {
+                    emit layer_parent_changed(id, parent->itemData(index).toString().toStdString());
+                });
         hl->addWidget(parent);
 
         list_->setItemWidget(item, row_widget);
         if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||
             prev_id == item->data(Qt::UserRole).toString())
             list_->setCurrentItem(item);
+
+        if (!l->properties_expanded) continue;
+
+        std::set<std::string> seen;
+        for (auto *prop : timeline_properties(*l)) {
+            if (!prop->is_animated()) continue;
+            QString label = property_label(prop->name);
+            std::string key = label.toStdString();
+            if (!seen.insert(key).second) continue;
+
+            auto *prop_item = new QListWidgetItem();
+            prop_item->setData(Qt::UserRole, QString::fromStdString(l->id));
+            prop_item->setData(Qt::UserRole + 1, "property");
+            prop_item->setData(Qt::UserRole + 2, label);
+            prop_item->setFlags((prop_item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled) &
+                                ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled | Qt::ItemIsUserCheckable));
+            prop_item->setSizeHint(QSize(0, 24));
+            list_->addItem(prop_item);
+
+            QWidget *prop_widget = new QWidget(list_);
+            auto *ph = new QHBoxLayout(prop_widget);
+            ph->setContentsMargins(64, 0, 4, 0);
+            ph->setSpacing(4);
+            QLabel *stopwatch = new QLabel("◇", prop_widget);
+            stopwatch->setFixedWidth(18);
+            stopwatch->setAlignment(Qt::AlignCenter);
+            stopwatch->setStyleSheet("color:#9aa5b1;");
+            ph->addWidget(stopwatch);
+            QLabel *prop_name = new QLabel(label, prop_widget);
+            prop_name->setStyleSheet("color:#b8b8b8;");
+            ph->addWidget(prop_name, 1);
+            QLabel *value = new QLabel(property_value_text(*prop, *l), prop_widget);
+            value->setFixedWidth(95);
+            value->setStyleSheet("color:#4ab0ff;font-family:monospace;");
+            ph->addWidget(value);
+            list_->setItemWidget(prop_item, prop_widget);
+        }
     }
     list_->blockSignals(false);
     on_selection_changed();
@@ -1520,55 +1683,65 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         }
     }
 
-    /* Layer bars */
-    if (title_) {
-        int row = 0;
-        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it, ++row) {
-            auto &layer = *it;
-            int y = rh + row * rowh;
-            bool sel = (layer->id == sel_layer_id_);
+    /* Layer/property rows.  This uses the same row model as LayerStack so
+     * keyframed property rows stay vertically aligned with the layer list.
+     */
+    auto rows = timeline_rows(title_);
+    for (int row = 0; row < (int)rows.size(); ++row) {
+        auto &entry = rows[row];
+        auto &layer = entry.layer;
+        int y = rh + row * rowh;
+        if (y > H) break;
+        bool sel = (layer->id == sel_layer_id_);
 
-            /* Row bg */
-            p.fillRect(0, y, W, rowh,
-                       sel ? QColor(0x1e,0x3a,0x5a) : QColor(0x1e,0x1e,0x1e));
-            p.setPen(QColor(0x2a,0x2a,0x2a));
-            p.drawLine(0, y + rowh - 1, W, y + rowh - 1);
+        p.fillRect(0, y, W, rowh,
+                   entry.is_property ? QColor(0x19,0x19,0x19) :
+                   sel ? QColor(0x1e,0x3a,0x5a) : QColor(0x1e,0x1e,0x1e));
+        p.setPen(QColor(0x2a,0x2a,0x2a));
+        p.drawLine(0, y + rowh - 1, W, y + rowh - 1);
 
-            /* Clip bar */
-            int x0 = time_to_x(layer->in_time);
-            int x1 = time_to_x(layer->out_time);
+        int x0 = time_to_x(layer->in_time);
+        int x1 = time_to_x(layer->out_time);
+        if (!entry.is_property) {
             QColor bar_col = layer_color(*layer, row);
             if (sel) bar_col = bar_col.lighter(125);
             p.fillRect(x0, y + 3, x1 - x0, rowh - 6, bar_col);
             p.setPen(QColor(0x0d,0x0d,0x0d));
             p.drawRect(x0, y + 3, x1 - x0, rowh - 6);
 
-            /* Layer name */
+            /* Trim handles for mouse resizing of layer in/out. */
+            p.fillRect(x0, y + 3, 4, rowh - 6, QColor(0xdc,0xdc,0xdc,150));
+            p.fillRect(x1 - 4, y + 3, 4, rowh - 6, QColor(0xdc,0xdc,0xdc,150));
+
             p.setPen(QColor(0xcc,0xcc,0xcc));
-            p.drawText(std::max(x0, 0) + 4, y, x1 - x0 - 8, rowh,
-                       Qt::AlignVCenter,
-                       QString::fromStdString(layer->name));
-
-            /* Keyframe diamonds */
-            auto draw_kf = [&](const AnimatedProperty &prop) {
-                for (auto &kf : prop.keyframes) {
-                    int kx = time_to_x(layer->in_time + kf.time);
-                    if (kx < 0 || kx > W) continue;
-                    int ky = y + rowh / 2;
-                    QPolygon diamond;
-                    diamond << QPoint(kx,     ky - 5)
-                            << QPoint(kx + 5, ky)
-                            << QPoint(kx,     ky + 5)
-                            << QPoint(kx - 5, ky);
-                    p.setBrush(keyframe_color(kf.easing));
-                    p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
-                    p.drawPolygon(diamond);
-                }
-            };
-
-            for (auto *prop : timeline_properties(*layer))
-                draw_kf(*prop);
+            p.drawText(std::max(x0, 0) + 6, y, std::max(1, x1 - x0 - 12), rowh,
+                       Qt::AlignVCenter, QString::fromStdString(layer->name));
+        } else {
+            p.fillRect(x0, y + rowh / 2 - 1, x1 - x0, 2, QColor(0x36,0x36,0x36));
+            p.setPen(QColor(0x77,0x77,0x77));
+            p.drawText(6, y, 150, rowh, Qt::AlignVCenter, property_label(entry.prop->name));
         }
+
+        auto draw_kf = [&](const AnimatedProperty &prop) {
+            for (const auto &kf : prop.keyframes) {
+                int kx = time_to_x(layer->in_time + kf.time);
+                if (kx < 0 || kx > W) continue;
+                int ky = y + rowh / 2;
+                QPolygon diamond;
+                diamond << QPoint(kx,     ky - 5)
+                        << QPoint(kx + 5, ky)
+                        << QPoint(kx,     ky + 5)
+                        << QPoint(kx - 5, ky);
+                p.setBrush(keyframe_color(kf.easing));
+                p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
+                p.drawPolygon(diamond);
+            }
+        };
+
+        if (entry.is_property)
+            draw_kf(*entry.prop);
+        else if (!layer->properties_expanded)
+            for (auto *prop : timeline_properties(*layer)) draw_kf(*prop);
     }
 
     /* Playhead */
@@ -1583,6 +1756,126 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         << QPoint(phx + 6, 0)
         << QPoint(phx,     10);
     p.drawPolygon(tri);
+
+    QString tc = format_timecode(playhead_);
+    QRect tc_rect(phx + 8, 2, 96, 18);
+    if (tc_rect.right() > W) tc_rect.moveRight(phx - 8);
+    p.fillRect(tc_rect, QColor(0x00,0x78,0xd4));
+    p.setPen(Qt::white);
+    p.drawText(tc_rect.adjusted(4, 0, -4, 0), Qt::AlignVCenter, tc);
+}
+
+bool TimelineWidget::hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *hit_layer,
+                                  AnimatedProperty **hit_prop, int *hit_kf_idx,
+                                  int *hit_row_idx) const
+{
+    if (!title_ || pos.y() < ruler_height()) return false;
+    auto rows = timeline_rows(title_);
+    int row = (pos.y() - ruler_height()) / row_height();
+    if (row < 0 || row >= (int)rows.size()) return false;
+
+    auto &entry = rows[row];
+    constexpr int kHitRadius = 7;
+    auto test_prop = [&](AnimatedProperty *prop) -> bool {
+        for (int i = 0; i < (int)prop->keyframes.size(); ++i) {
+            const auto &kf = prop->keyframes[i];
+            int kx = time_to_x(entry.layer->in_time + kf.time);
+            int ky = ruler_height() + row * row_height() + row_height() / 2;
+            if (std::abs(pos.x() - kx) <= kHitRadius &&
+                std::abs(pos.y() - ky) <= kHitRadius) {
+                if (hit_layer) *hit_layer = entry.layer;
+                if (hit_prop) *hit_prop = prop;
+                if (hit_kf_idx) *hit_kf_idx = i;
+                if (hit_row_idx) *hit_row_idx = row;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (entry.is_property)
+        return entry.prop && test_prop(entry.prop);
+    if (!entry.layer->properties_expanded) {
+        for (auto *prop : timeline_properties(*entry.layer)) {
+            if (test_prop(prop)) return true;
+        }
+    }
+    return false;
+}
+
+void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
+{
+    if (!title_) return;
+
+    std::shared_ptr<Layer> layer;
+    AnimatedProperty *hit_prop = nullptr;
+    int hit_idx = -1;
+    if (!hit_keyframe(ev->pos(), &layer, &hit_prop, &hit_idx, nullptr)) return;
+    Keyframe *hit_keyframe = &hit_prop->keyframes[hit_idx];
+
+    QMenu menu(this);
+    menu.setTitle(QString("%1 easing").arg(QString::fromStdString(hit_prop->name)));
+
+    auto add_easing = [&](const QString &label, EasingType easing) {
+        QAction *action = menu.addAction(label);
+        action->setCheckable(true);
+        action->setChecked(hit_keyframe->easing == easing);
+        action->setData((int)easing);
+        QPixmap swatch(12, 12);
+        swatch.fill(Qt::transparent);
+        QPainter painter(&swatch);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setBrush(keyframe_color(easing));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(1, 1, 10, 10);
+        action->setIcon(QIcon(swatch));
+        return action;
+    };
+
+    add_easing("Linear", EasingType::Linear);
+    add_easing("Ease In", EasingType::EaseIn);
+    add_easing("Ease Out", EasingType::EaseOut);
+    add_easing("Ease In/Out", EasingType::EaseInOut);
+    add_easing("Bezier", EasingType::Bezier);
+    add_easing("Step / Hold", EasingType::Hold);
+
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (!chosen) return;
+
+    hit_keyframe->easing = (EasingType)chosen->data().toInt();
+    update();
+    emit keyframe_easing_changed();
+}
+
+void TimelineWidget::wheelEvent(QWheelEvent *ev)
+{
+    if (!title_) return;
+
+    const QPoint angle = ev->angleDelta();
+    if (ev->modifiers() & Qt::ShiftModifier) {
+        int delta = angle.x() != 0 ? angle.x() : angle.y();
+        scroll_x_ -= delta;
+        clamp_scroll();
+        update();
+        ev->accept();
+        return;
+    }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    int cursor_x = (int)std::round(ev->position().x());
+#else
+    int cursor_x = ev->pos().x();
+#endif
+    double anchor_time = (cursor_x + scroll_x_) / pixels_per_sec_;
+    int delta = angle.y() != 0 ? angle.y() : angle.x();
+    if (delta == 0) return;
+
+    double factor = std::pow(1.0015, delta);
+    pixels_per_sec_ = std::clamp(pixels_per_sec_ * factor, 25.0, 1200.0);
+    scroll_x_ = (int)std::round(anchor_time * pixels_per_sec_) - cursor_x;
+    clamp_scroll();
+    update();
+    ev->accept();
 }
 
 void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
@@ -1686,27 +1979,177 @@ void TimelineWidget::wheelEvent(QWheelEvent *ev)
 
 void TimelineWidget::mousePressEvent(QMouseEvent *ev)
 {
+    if (!title_) return;
+    drag_mode_ = DragMode::None;
+    drag_layer_id_.clear();
+    drag_prop_name_.clear();
+    drag_keyframe_index_ = -1;
+
     if (ev->pos().y() < ruler_height()) {
-        dragging_ = true;
-        double t = std::clamp(x_to_time(ev->pos().x()),
-                              0.0,
-                              title_ ? title_->duration : 100.0);
+        drag_mode_ = DragMode::Playhead;
+        double t = std::clamp(x_to_time(ev->pos().x()), 0.0, title_->duration);
         emit playhead_changed(t);
+        ev->accept();
+        return;
+    }
+
+    std::shared_ptr<Layer> hit_layer;
+    AnimatedProperty *hit_prop = nullptr;
+    int hit_idx = -1;
+    if (hit_keyframe(ev->pos(), &hit_layer, &hit_prop, &hit_idx, nullptr)) {
+        drag_mode_ = DragMode::Keyframe;
+        drag_layer_id_ = hit_layer->id;
+        drag_prop_name_ = hit_prop->name;
+        drag_keyframe_index_ = hit_idx;
+        setCursor(Qt::ClosedHandCursor);
+        ev->accept();
+        return;
+    }
+
+    auto rows = timeline_rows(title_);
+    int row = (ev->pos().y() - ruler_height()) / row_height();
+    if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
+        auto layer = rows[row].layer;
+        int x0 = time_to_x(layer->in_time);
+        int x1 = time_to_x(layer->out_time);
+        constexpr int kTrimHit = 7;
+        if (std::abs(ev->pos().x() - x0) <= kTrimHit) {
+            drag_mode_ = DragMode::TrimIn;
+            drag_layer_id_ = layer->id;
+            setCursor(Qt::SizeHorCursor);
+            ev->accept();
+            return;
+        }
+        if (std::abs(ev->pos().x() - x1) <= kTrimHit) {
+            drag_mode_ = DragMode::TrimOut;
+            drag_layer_id_ = layer->id;
+            setCursor(Qt::SizeHorCursor);
+            ev->accept();
+            return;
+        }
     }
 }
 
 void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
 {
-    if (!dragging_) return;
-    double t = std::clamp(x_to_time(ev->pos().x()),
-                          0.0,
-                          title_ ? title_->duration : 100.0);
-    emit playhead_changed(t);
+    if (!title_) return;
+    double t = std::clamp(x_to_time(ev->pos().x()), 0.0, title_->duration);
+
+    if (drag_mode_ == DragMode::Playhead) {
+        emit playhead_changed(t);
+        return;
+    }
+
+    if (drag_mode_ == DragMode::Keyframe) {
+        auto layer = title_->find_layer(drag_layer_id_);
+        if (!layer) return;
+        for (auto *prop : timeline_properties(*layer)) {
+            if (prop->name != drag_prop_name_) continue;
+            if (drag_keyframe_index_ < 0 || drag_keyframe_index_ >= (int)prop->keyframes.size()) return;
+            prop->keyframes[drag_keyframe_index_].time =
+                std::clamp(t - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
+            update();
+            return;
+        }
+    }
+
+    if (drag_mode_ == DragMode::TrimIn || drag_mode_ == DragMode::TrimOut) {
+        auto layer = title_->find_layer(drag_layer_id_);
+        if (!layer) return;
+        if (drag_mode_ == DragMode::TrimIn)
+            layer->in_time = std::clamp(t, 0.0, std::max(0.0, layer->out_time - obs_frame_duration()));
+        else
+            layer->out_time = std::clamp(t, layer->in_time + obs_frame_duration(), title_->duration);
+        update();
+        return;
+    }
+
+    auto rows = timeline_rows(title_);
+    int row = (ev->pos().y() - ruler_height()) / row_height();
+    if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
+        int x0 = time_to_x(rows[row].layer->in_time);
+        int x1 = time_to_x(rows[row].layer->out_time);
+        if (std::abs(ev->pos().x() - x0) <= 7 || std::abs(ev->pos().x() - x1) <= 7)
+            setCursor(Qt::SizeHorCursor);
+        else
+            unsetCursor();
+    } else {
+        unsetCursor();
+    }
 }
 
 void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
 {
-    dragging_ = false;
+    bool changed = drag_mode_ == DragMode::Keyframe ||
+                   drag_mode_ == DragMode::TrimIn ||
+                   drag_mode_ == DragMode::TrimOut;
+    if (drag_mode_ == DragMode::Keyframe && title_) {
+        if (auto layer = title_->find_layer(drag_layer_id_)) {
+            for (auto *prop : timeline_properties(*layer)) {
+                if (prop->name != drag_prop_name_) continue;
+                std::sort(prop->keyframes.begin(), prop->keyframes.end(),
+                          [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
+                break;
+            }
+        }
+    }
+
+    drag_mode_ = DragMode::None;
+    drag_layer_id_.clear();
+    drag_prop_name_.clear();
+    drag_keyframe_index_ = -1;
+    unsetCursor();
+    if (changed) emit keyframe_easing_changed();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ *  TitlePropertiesPanel
+ * ══════════════════════════════════════════════════════════════════ */
+TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
+    : QGroupBox("Title", parent)
+{
+    setStyleSheet(
+        "QGroupBox{color:#aaa;background:#1a1a1a;border:1px solid #333;"
+        "border-radius:3px;margin-top:6px;font-size:10px;padding-top:4px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:8px;}"
+        "QDoubleSpinBox{color:#ccc;background:#2a2a2a;border:none;"
+        "border-radius:2px;padding:2px;}");
+
+    auto *fl = new QFormLayout(this);
+    fl->setContentsMargins(8, 10, 8, 6);
+    fl->setSpacing(3);
+
+    spn_duration_ = new QDoubleSpinBox(this);
+    spn_duration_->setRange(0.1, 3600.0);
+    spn_duration_->setSingleStep(0.5);
+    spn_duration_->setDecimals(2);
+    spn_duration_->setSuffix(" s");
+    fl->addRow("Length:", spn_duration_);
+
+    connect(spn_duration_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                if (!title_ || loading_values_) return;
+                double old_duration = title_->duration;
+                title_->duration = v;
+                for (auto &layer : title_->layers) {
+                    if (std::abs(layer->out_time - old_duration) < 0.001 || layer->out_time > v)
+                        layer->out_time = v;
+                }
+                emit title_changed();
+            });
+}
+
+void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
+{
+    title_ = t;
+    load_values();
+}
+
+void TitlePropertiesPanel::load_values()
+{
+    loading_values_ = true;
+    spn_duration_->setValue(title_ ? title_->duration : 5.0);
+    loading_values_ = false;
 }
 
 /* ══════════════════════════════════════════════════════════════════

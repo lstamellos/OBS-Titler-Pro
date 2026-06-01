@@ -88,6 +88,8 @@ struct Layer {
     LayerType   type = LayerType::Text;
     bool        visible  = true;
     bool        locked   = false;
+    bool        properties_expanded = false;
+    std::string parent_id;
 
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;
