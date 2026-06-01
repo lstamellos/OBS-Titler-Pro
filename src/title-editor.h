@@ -34,6 +34,9 @@
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QTimer>
+#include <QPushButton>
+#include <QLineEdit>
+#include <QSpinBox>
 #include <memory>
 
 /* Forward declarations for sub-widgets */
@@ -140,6 +143,7 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void refresh();
+    void set_selected_layer(const std::string &layer_id);
 
 signals:
     void layer_selected(const std::string &layer_id);
@@ -151,6 +155,7 @@ signals:
 private slots:
     void on_add_text();
     void on_add_rect();
+    void on_add_image();
     void on_delete();
     void on_item_changed(QListWidgetItem *item);
     void on_selection_changed();
@@ -161,9 +166,10 @@ private:
 
     std::shared_ptr<Title> title_;
     QListWidget  *list_     = nullptr;
-    QPushButton  *btn_add_text_ = nullptr;
-    QPushButton  *btn_add_rect_ = nullptr;
-    QPushButton  *btn_del_      = nullptr;
+    QPushButton  *btn_add_text_  = nullptr;
+    QPushButton  *btn_add_rect_  = nullptr;
+    QPushButton  *btn_add_image_ = nullptr;
+    QPushButton  *btn_del_       = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -231,6 +237,11 @@ private:
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
     double playhead_ = 0.0;
+    bool loading_values_ = false;
+
+    QGroupBox       *text_box_     = nullptr;
+    QGroupBox       *rect_box_     = nullptr;
+    QGroupBox       *image_box_    = nullptr;
 
     /* Text controls */
     QLineEdit       *txt_content_  = nullptr;
@@ -238,6 +249,15 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+
+    /* Rectangle/Image geometry controls */
+    QDoubleSpinBox  *spn_rect_w_   = nullptr;
+    QDoubleSpinBox  *spn_rect_h_   = nullptr;
+    QDoubleSpinBox  *spn_corner_   = nullptr;
+
+    /* Image controls */
+    QLineEdit       *txt_image_path_ = nullptr;
+    QPushButton     *btn_browse_image_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;
