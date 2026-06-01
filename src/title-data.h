@@ -119,8 +119,34 @@ struct Layer {
     float       rect_height   = 100.0f;
     float       corner_radius = 0.0f;
 
+    /* Keyframable geometry mirrors the static fields above so older saved
+     * titles remain readable while new titles can animate size/origin.
+     */
+    AnimatedProperty box_width  { "box_width",  1920.0 };
+    AnimatedProperty box_height { "box_height", 100.0 };
+
+    /* ----- Geometry anchor / origin -----
+     * Normalized inside the editable bounding box: 0.0 = left/top,
+     * 0.5 = center, 1.0 = right/bottom. The layer position is this origin.
+     */
+    float       origin_x      = 0.5f;
+    float       origin_y      = 0.5f;
+    AnimatedProperty origin_x_prop { "origin_x", 0.5 };
+    AnimatedProperty origin_y_prop { "origin_y", 0.5 };
+
+    /* ----- Keyframable color channels, 0-255 ARGB. */
+    AnimatedProperty text_color_a { "text_color_a", 255.0 };
+    AnimatedProperty text_color_r { "text_color_r", 255.0 };
+    AnimatedProperty text_color_g { "text_color_g", 255.0 };
+    AnimatedProperty text_color_b { "text_color_b", 255.0 };
+    AnimatedProperty fill_color_a { "fill_color_a", 255.0 };
+    AnimatedProperty fill_color_r { "fill_color_r",  34.0 };
+    AnimatedProperty fill_color_g { "fill_color_g",  34.0 };
+    AnimatedProperty fill_color_b { "fill_color_b",  34.0 };
+
     /* ----- Image ----- */
     std::string image_path;
+    bool        lock_aspect_ratio = true;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -149,6 +175,7 @@ struct Title {
 class TitleDataStore {
 public:
     static TitleDataStore &instance();
+    static std::string make_uuid();
 
     /* CRUD */
     std::shared_ptr<Title> create_title(const std::string &name = "New Title");
@@ -174,5 +201,4 @@ private:
     std::vector<ChangeCallback>          change_cbs_;
 
     static std::string data_path();
-    static std::string make_uuid();
 };
