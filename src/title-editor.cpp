@@ -41,6 +41,8 @@
 #include <QAbstractSpinBox>
 #include <QAbstractItemModel>
 #include <QTextEdit>
+#include <QMenu>
+#include <QContextMenuEvent>
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -233,6 +235,38 @@ static void style_color_button(QPushButton *button, uint32_t argb)
         .arg(c.name(QColor::HexArgb)));
 }
 
+
+static QColor keyframe_color(EasingType easing)
+{
+    switch (easing) {
+    case EasingType::Linear:
+        return C_KF_DOT;
+    case EasingType::Hold:
+        return QColor(0xd8, 0x44, 0x44);
+    case EasingType::EaseIn:
+    case EasingType::EaseOut:
+    case EasingType::EaseInOut:
+        return QColor(0x43, 0xd1, 0x7a);
+    case EasingType::Bezier:
+        return QColor(0x55, 0xbc, 0xff);
+    default:
+        return C_KF_DOT;
+    }
+}
+
+static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
+{
+    return {&layer.pos_x, &layer.pos_y,
+            &layer.scale_x, &layer.scale_y,
+            &layer.rotation, &layer.opacity,
+            &layer.box_width, &layer.box_height,
+            &layer.origin_x_prop, &layer.origin_y_prop,
+            &layer.text_color_a, &layer.text_color_r,
+            &layer.text_color_g, &layer.text_color_b,
+            &layer.fill_color_a, &layer.fill_color_r,
+            &layer.fill_color_g, &layer.fill_color_b};
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor
  * ══════════════════════════════════════════════════════════════════ */
@@ -422,6 +456,8 @@ void TitleEditor::build_ui()
 
     connect(timeline_, &TimelineWidget::playhead_changed,
             this, &TitleEditor::on_playhead_changed);
+    connect(timeline_, &TimelineWidget::keyframe_easing_changed,
+            this, &TitleEditor::on_title_modified);
 
     connect(props_, &PropertiesPanel::property_changed,
             this, &TitleEditor::on_title_modified);
@@ -1351,21 +1387,14 @@ void TimelineWidget::paintEvent(QPaintEvent *)
                             << QPoint(kx + 5, ky)
                             << QPoint(kx,     ky + 5)
                             << QPoint(kx - 5, ky);
-                    p.setBrush(C_KF_DOT);
-                    p.setPen(Qt::NoPen);
+                    p.setBrush(keyframe_color(kf.easing));
+                    p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
                     p.drawPolygon(diamond);
                 }
             };
 
-            draw_kf(layer->pos_x);   draw_kf(layer->pos_y);
-            draw_kf(layer->scale_x); draw_kf(layer->scale_y);
-            draw_kf(layer->rotation); draw_kf(layer->opacity);
-            draw_kf(layer->box_width); draw_kf(layer->box_height);
-            draw_kf(layer->origin_x_prop); draw_kf(layer->origin_y_prop);
-            draw_kf(layer->text_color_a); draw_kf(layer->text_color_r);
-            draw_kf(layer->text_color_g); draw_kf(layer->text_color_b);
-            draw_kf(layer->fill_color_a); draw_kf(layer->fill_color_r);
-            draw_kf(layer->fill_color_g); draw_kf(layer->fill_color_b);
+            for (auto *prop : timeline_properties(*layer))
+                draw_kf(*prop);
         }
     }
 
@@ -1381,6 +1410,74 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         << QPoint(phx + 6, 0)
         << QPoint(phx,     10);
     p.drawPolygon(tri);
+}
+
+void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
+{
+    if (!title_) return;
+
+    int rh = ruler_height();
+    int rowh = row_height();
+    if (ev->pos().y() < rh) return;
+
+    int row = (ev->pos().y() - rh) / rowh;
+    if (row < 0 || row >= (int)title_->layers.size()) return;
+
+    auto layer_it = title_->layers.rbegin() + row;
+    if (layer_it == title_->layers.rend()) return;
+    auto &layer = *layer_it;
+
+    constexpr int kHitRadius = 7;
+    AnimatedProperty *hit_prop = nullptr;
+    Keyframe *hit_keyframe = nullptr;
+    for (auto *prop : timeline_properties(*layer)) {
+        for (auto &kf : prop->keyframes) {
+            int kx = time_to_x(layer->in_time + kf.time);
+            int ky = rh + row * rowh + rowh / 2;
+            if (std::abs(ev->pos().x() - kx) <= kHitRadius &&
+                std::abs(ev->pos().y() - ky) <= kHitRadius) {
+                hit_prop = prop;
+                hit_keyframe = &kf;
+                break;
+            }
+        }
+        if (hit_keyframe) break;
+    }
+
+    if (!hit_prop || !hit_keyframe) return;
+
+    QMenu menu(this);
+    menu.setTitle(QString("%1 easing").arg(QString::fromStdString(hit_prop->name)));
+
+    auto add_easing = [&](const QString &label, EasingType easing) {
+        QAction *action = menu.addAction(label);
+        action->setCheckable(true);
+        action->setChecked(hit_keyframe->easing == easing);
+        action->setData((int)easing);
+        QPixmap swatch(12, 12);
+        swatch.fill(Qt::transparent);
+        QPainter painter(&swatch);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setBrush(keyframe_color(easing));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(1, 1, 10, 10);
+        action->setIcon(QIcon(swatch));
+        return action;
+    };
+
+    add_easing("Linear", EasingType::Linear);
+    add_easing("Ease In", EasingType::EaseIn);
+    add_easing("Ease Out", EasingType::EaseOut);
+    add_easing("Ease In/Out", EasingType::EaseInOut);
+    add_easing("Bezier", EasingType::Bezier);
+    add_easing("Step / Hold", EasingType::Hold);
+
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (!chosen) return;
+
+    hit_keyframe->easing = (EasingType)chosen->data().toInt();
+    update();
+    emit keyframe_easing_changed();
 }
 
 void TimelineWidget::mousePressEvent(QMouseEvent *ev)

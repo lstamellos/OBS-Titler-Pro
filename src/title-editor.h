@@ -49,6 +49,7 @@ class TimelineWidget;
 class PropertiesPanel;
 class TitlePropertiesPanel;
 class QKeyEvent;
+class QContextMenuEvent;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -231,12 +232,14 @@ signals:
                         const std::string &prop_name, double t);
     void keyframe_moved(const std::string &layer_id,
                         const std::string &prop_name, int kf_idx, double new_t);
+    void keyframe_easing_changed();
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void contextMenuEvent(QContextMenuEvent *ev) override;
 
 private:
     double x_to_time(int x) const;
