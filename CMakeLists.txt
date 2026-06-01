@@ -16,59 +16,124 @@ find_package(libobs QUIET)
 find_package(obs-frontend-api QUIET)
 
 if(NOT libobs_FOUND OR NOT obs-frontend-api_FOUND)
+  # Allow callers to point at an OBS SDK/install tree without baking in
+  # machine-specific paths. CMake cache values take precedence over
+  # environment variables so CI and developers can override discovery.
+  set(OBS_SEARCH_ROOTS)
+  if(OBS_SDK_DIR)
+    list(APPEND OBS_SEARCH_ROOTS "${OBS_SDK_DIR}")
+  endif()
+  if(DEFINED ENV{OBS_SDK_DIR})
+    list(APPEND OBS_SEARCH_ROOTS "$ENV{OBS_SDK_DIR}")
+  endif()
+  if(DEFINED ENV{OBS_STUDIO_DIR})
+    list(APPEND OBS_SEARCH_ROOTS "$ENV{OBS_STUDIO_DIR}")
+  endif()
+
   if(WIN32)
-    # Search for OBS dependencies package
-    file(GLOB OBS_CANDIDATES "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-*")
-    list(SORT OBS_CANDIDATES ORDER DESCENDING)
-    list(APPEND OBS_CANDIDATES "C:/Program Files/obs-studio")
-    
-    foreach(candidate ${OBS_CANDIDATES})
-      if(EXISTS "${candidate}/lib/obs.lib" OR EXISTS "${candidate}/lib/obs/obs.lib")
-        set(OBS_SDK_DIR "${candidate}" CACHE PATH "Path to OBS Studio SDK" FORCE)
-        break()
+    foreach(base_dir
+        "$ENV{USERPROFILE}/Desktop/obs-build-dependencies"
+        "$ENV{USERPROFILE}/Downloads/obs-build-dependencies"
+        "${CMAKE_SOURCE_DIR}/obs-build-dependencies")
+      if(IS_DIRECTORY "${base_dir}")
+        file(GLOB plugin_deps "${base_dir}/plugin-deps-*")
+        list(SORT plugin_deps ORDER DESCENDING)
+        list(APPEND OBS_SEARCH_ROOTS ${plugin_deps})
       endif()
     endforeach()
 
-    if(OBS_SDK_DIR)
+    if(DEFINED ENV{ProgramFiles})
+      list(APPEND OBS_SEARCH_ROOTS "$ENV{ProgramFiles}/obs-studio")
+    endif()
+    if(DEFINED ENV{ProgramW6432})
+      list(APPEND OBS_SEARCH_ROOTS "$ENV{ProgramW6432}/obs-studio")
+    endif()
+  endif()
+
+  list(REMOVE_DUPLICATES OBS_SEARCH_ROOTS)
+
+  foreach(candidate IN LISTS OBS_SEARCH_ROOTS)
+    if(NOT IS_DIRECTORY "${candidate}")
+      continue()
+    endif()
+
+    unset(OBS_LIB CACHE)
+    unset(OBS_LIB)
+    unset(OBS_FRONTEND_API_LIB CACHE)
+    unset(OBS_FRONTEND_API_LIB)
+    unset(OBS_INCLUDE_DIR CACHE)
+    unset(OBS_INCLUDE_DIR)
+    unset(OBS_DLL CACHE)
+    unset(OBS_DLL)
+    unset(OBS_FRONTEND_API_DLL CACHE)
+    unset(OBS_FRONTEND_API_DLL)
+
+    find_library(OBS_LIB NAMES obs
+      HINTS "${candidate}/lib" "${candidate}/lib/obs"
+      NO_DEFAULT_PATH)
+    find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api
+      HINTS "${candidate}/lib" "${candidate}/lib/obs"
+      NO_DEFAULT_PATH)
+    find_path(OBS_INCLUDE_DIR NAMES obs.h
+      HINTS "${candidate}/include" "${candidate}/include/obs"
+      NO_DEFAULT_PATH)
+
+    if(OBS_LIB AND OBS_FRONTEND_API_LIB AND OBS_INCLUDE_DIR)
+      set(OBS_SDK_DIR "${candidate}" CACHE PATH "Path to OBS Studio SDK" FORCE)
       message(STATUS "Found OBS SDK at: ${OBS_SDK_DIR}")
       list(APPEND CMAKE_PREFIX_PATH "${OBS_SDK_DIR}")
-      find_library(OBS_LIB NAMES obs HINTS "${OBS_SDK_DIR}/lib" "${OBS_SDK_DIR}/lib/obs")
-      find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api HINTS "${OBS_SDK_DIR}/lib" "${OBS_SDK_DIR}/lib/obs")
-      find_path(OBS_INCLUDE_DIR NAMES obs.h HINTS "${OBS_SDK_DIR}/include" "${OBS_SDK_DIR}/include/obs")
 
-      if(OBS_LIB AND OBS_FRONTEND_API_LIB AND OBS_INCLUDE_DIR)
-        # Find DLLs to specify IMPORTED_LOCATION and prevent CMP0111 warnings
-        find_file(OBS_DLL NAMES obs.dll HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin")
-        find_file(OBS_FRONTEND_API_DLL NAMES obs-frontend-api.dll HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin")
+      # Find DLLs to specify IMPORTED_LOCATION and prevent CMP0111 warnings.
+      find_file(OBS_DLL NAMES obs.dll
+        HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin"
+        NO_DEFAULT_PATH)
+      find_file(OBS_FRONTEND_API_DLL NAMES obs-frontend-api.dll
+        HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin"
+        NO_DEFAULT_PATH)
 
-        if(NOT TARGET OBS::libobs)
-          add_library(OBS::libobs SHARED IMPORTED GLOBAL)
-          set_target_properties(OBS::libobs PROPERTIES
-            IMPORTED_IMPLIB "${OBS_LIB}"
-            INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
-          )
+      if(NOT TARGET OBS::libobs)
+        add_library(OBS::libobs SHARED IMPORTED GLOBAL)
+        set_target_properties(OBS::libobs PROPERTIES
+          INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
+        )
+        if(WIN32)
+          set_target_properties(OBS::libobs PROPERTIES IMPORTED_IMPLIB "${OBS_LIB}")
           if(OBS_DLL)
             set_target_properties(OBS::libobs PROPERTIES IMPORTED_LOCATION "${OBS_DLL}")
           endif()
+        else()
+          set_target_properties(OBS::libobs PROPERTIES IMPORTED_LOCATION "${OBS_LIB}")
         endif()
-        if(NOT TARGET OBS::obs-frontend-api)
-          add_library(OBS::obs-frontend-api SHARED IMPORTED GLOBAL)
-          set_target_properties(OBS::obs-frontend-api PROPERTIES
-            IMPORTED_IMPLIB "${OBS_FRONTEND_API_LIB}"
-            INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
-          )
+      endif()
+      if(NOT TARGET OBS::obs-frontend-api)
+        add_library(OBS::obs-frontend-api SHARED IMPORTED GLOBAL)
+        set_target_properties(OBS::obs-frontend-api PROPERTIES
+          INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
+        )
+        if(WIN32)
+          set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_IMPLIB "${OBS_FRONTEND_API_LIB}")
           if(OBS_FRONTEND_API_DLL)
             set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_LOCATION "${OBS_FRONTEND_API_DLL}")
           endif()
+        else()
+          set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_LOCATION "${OBS_FRONTEND_API_LIB}")
         endif()
-        if(EXISTS "${OBS_SDK_DIR}/cmake/Qt6")
-          set(Qt6_DIR "${OBS_SDK_DIR}/cmake/Qt6" CACHE PATH "Qt6 cmake dir from OBS" FORCE)
-        endif()
-        set(libobs_FOUND TRUE)
-        set(obs-frontend-api_FOUND TRUE)
       endif()
+      if(EXISTS "${OBS_SDK_DIR}/cmake/Qt6")
+        set(Qt6_DIR "${OBS_SDK_DIR}/cmake/Qt6" CACHE PATH "Qt6 cmake dir from OBS" FORCE)
+      endif()
+      set(libobs_FOUND TRUE)
+      set(obs-frontend-api_FOUND TRUE)
+      break()
     endif()
-  endif()
+
+    unset(OBS_LIB CACHE)
+    unset(OBS_LIB)
+    unset(OBS_FRONTEND_API_LIB CACHE)
+    unset(OBS_FRONTEND_API_LIB)
+    unset(OBS_INCLUDE_DIR CACHE)
+    unset(OBS_INCLUDE_DIR)
+  endforeach()
 endif()
 
 if(NOT libobs_FOUND OR NOT obs-frontend-api_FOUND)
@@ -228,6 +293,7 @@ target_compile_definitions(obs-titles PRIVATE
 set_target_properties(obs-titles PROPERTIES
     PREFIX ""
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/obs-plugins"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/obs-plugins"
 )
 
 # ── Install ──────────────────────────────────────────────────────────
