@@ -262,6 +262,15 @@ private:
     QLineEdit       *txt_image_path_ = nullptr;
     QPushButton     *btn_browse_image_ = nullptr;
 
+    /* Rectangle/Image geometry controls */
+    QDoubleSpinBox  *spn_rect_w_   = nullptr;
+    QDoubleSpinBox  *spn_rect_h_   = nullptr;
+    QDoubleSpinBox  *spn_corner_   = nullptr;
+
+    /* Image controls */
+    QLineEdit       *txt_image_path_ = nullptr;
+    QPushButton     *btn_browse_image_ = nullptr;
+
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;
     QDoubleSpinBox  *spn_py_       = nullptr;
