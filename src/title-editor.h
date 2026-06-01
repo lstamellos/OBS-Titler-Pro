@@ -37,6 +37,8 @@
 #include <QPushButton>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QPointF>
+#include <QRectF>
 #include <memory>
 
 /* Forward declarations for sub-widgets */
@@ -115,15 +117,30 @@ public:
 
 signals:
     void layer_clicked(const std::string &layer_id);
+    void layer_geometry_changed();
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
+    void mouseMoveEvent(QMouseEvent *ev) override;
+    void mouseReleaseEvent(QMouseEvent *ev) override;
     void wheelEvent(QWheelEvent *ev) override;
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
+    enum class DragMode { None, Move, ResizeNW, ResizeNE, ResizeSW, ResizeSE, Origin };
+
     void render_to_pixmap();
+    std::shared_ptr<Layer> selected_layer() const;
+    QRectF layer_local_rect(const Layer &layer) const;
+    double view_scale() const;
+    QPointF view_origin() const;
+    QPointF view_to_canvas(const QPointF &view_pt) const;
+    QPointF canvas_to_view(const QPointF &canvas_pt) const;
+    QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
+    QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
+    DragMode hit_test_selected(const QPointF &view_pt) const;
+    void apply_drag(const QPointF &view_pt);
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -131,6 +148,15 @@ private:
     float  zoom_     = 1.0f;
     QPixmap frame_pixmap_;
     bool dirty_ = true;
+
+    DragMode drag_mode_ = DragMode::None;
+    QPointF drag_start_canvas_;
+    double drag_start_x_ = 0.0;
+    double drag_start_y_ = 0.0;
+    float drag_start_w_ = 1.0f;
+    float drag_start_h_ = 1.0f;
+    float drag_start_origin_x_ = 0.5f;
+    float drag_start_origin_y_ = 0.5f;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -267,4 +293,7 @@ private:
     QDoubleSpinBox  *spn_py_       = nullptr;
     QDoubleSpinBox  *spn_rot_      = nullptr;
     QDoubleSpinBox  *spn_opacity_  = nullptr;
+    QDoubleSpinBox  *spn_origin_x_ = nullptr;
+    QDoubleSpinBox  *spn_origin_y_ = nullptr;
+    QCheckBox       *chk_lock_aspect_ = nullptr;
 };

@@ -119,8 +119,16 @@ struct Layer {
     float       rect_height   = 100.0f;
     float       corner_radius = 0.0f;
 
+    /* ----- Geometry anchor / origin -----
+     * Normalized inside the editable bounding box: 0.0 = left/top,
+     * 0.5 = center, 1.0 = right/bottom. The layer position is this origin.
+     */
+    float       origin_x      = 0.5f;
+    float       origin_y      = 0.5f;
+
     /* ----- Image ----- */
     std::string image_path;
+    bool        lock_aspect_ratio = true;
 };
 
 /* ══════════════════════════════════════════════════════════════════

@@ -180,6 +180,7 @@ void TitleEditor::build_ui()
                 l->rect_width = title_->width * 0.5f;
                 l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
                 if (type == LayerType::Image) {
+                    l->lock_aspect_ratio = true;
                     QString path = QFileDialog::getOpenFileName(
                         this, "Choose Image", QString(),
                         "Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*)");
@@ -236,6 +237,14 @@ void TitleEditor::build_ui()
 
     connect(canvas_, &CanvasPreview::layer_clicked,
             this, &TitleEditor::on_layer_selected);
+    connect(canvas_, &CanvasPreview::layer_geometry_changed,
+            this, [this]() {
+                on_title_modified();
+                if (title_ && !sel_layer_id_.empty()) {
+                    if (auto layer = title_->find_layer(sel_layer_id_))
+                        props_->set_layer(layer, playhead_);
+                }
+            });
 }
 
 void TitleEditor::build_toolbar()
@@ -428,6 +437,158 @@ void CanvasPreview::refresh_preview()
     update();
 }
 
+std::shared_ptr<Layer> CanvasPreview::selected_layer() const
+{
+    return title_ ? title_->find_layer(sel_layer_id_) : nullptr;
+}
+
+QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
+{
+    double w = std::max(1.0f, layer.rect_width);
+    double h = std::max(1.0f, layer.rect_height);
+    return QRectF(-layer.origin_x * w, -layer.origin_y * h, w, h);
+}
+
+double CanvasPreview::view_scale() const
+{
+    if (!title_) return 1.0;
+    return std::min((double)width() / title_->width,
+                    (double)height() / title_->height) * zoom_;
+}
+
+QPointF CanvasPreview::view_origin() const
+{
+    if (!title_) return QPointF(0, 0);
+    double scale = view_scale();
+    return QPointF((width() - title_->width * scale) / 2.0,
+                   (height() - title_->height * scale) / 2.0);
+}
+
+QPointF CanvasPreview::view_to_canvas(const QPointF &view_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF((view_pt.x() - origin.x()) / scale,
+                   (view_pt.y() - origin.y()) / scale);
+}
+
+QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF(origin.x() + canvas_pt.x() * scale,
+                   origin.y() + canvas_pt.y() * scale);
+}
+
+QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = -layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double dx = canvas_pt.x() - px;
+    double dy = canvas_pt.y() - py;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    double sx = std::max(0.0001, layer.scale_x.evaluate(lt));
+    double sy = std::max(0.0001, layer.scale_y.evaluate(lt));
+    return QPointF((dx * c - dy * ss) / sx,
+                   (dx * ss + dy * c) / sy);
+}
+
+QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double sx = layer.scale_x.evaluate(lt);
+    double sy = layer.scale_y.evaluate(lt);
+    double x = layer_pt.x() * sx;
+    double y = layer_pt.y() * sy;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    return QPointF(px + x * c - y * ss,
+                   py + x * ss + y * c);
+}
+
+CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt) const
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked) return DragMode::None;
+
+    double scale = view_scale();
+    double handle = 8.0 / std::max(0.1, scale);
+    QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    QRectF r = layer_local_rect(*layer);
+
+    auto near_pt = [&](const QPointF &p) {
+        return std::abs(local.x() - p.x()) <= handle &&
+               std::abs(local.y() - p.y()) <= handle;
+    };
+
+    if (near_pt(r.topLeft())) return DragMode::ResizeNW;
+    if (near_pt(r.topRight())) return DragMode::ResizeNE;
+    if (near_pt(r.bottomLeft())) return DragMode::ResizeSW;
+    if (near_pt(r.bottomRight())) return DragMode::ResizeSE;
+    if (std::hypot(local.x(), local.y()) <= handle * 1.25) return DragMode::Origin;
+    if (r.adjusted(-handle, -handle, handle, handle).contains(local)) return DragMode::Move;
+    return DragMode::None;
+}
+
+void CanvasPreview::apply_drag(const QPointF &view_pt)
+{
+    auto layer = selected_layer();
+    if (!layer || drag_mode_ == DragMode::None) return;
+
+    QPointF canvas = view_to_canvas(view_pt);
+    QPointF delta = canvas - drag_start_canvas_;
+
+    if (drag_mode_ == DragMode::Move) {
+        layer->pos_x.static_value = drag_start_x_ + delta.x();
+        layer->pos_y.static_value = drag_start_y_ + delta.y();
+    } else if (drag_mode_ == DragMode::Origin) {
+        double w = std::max(1.0f, drag_start_w_);
+        double h = std::max(1.0f, drag_start_h_);
+        layer->origin_x = (float)std::clamp(drag_start_origin_x_ + delta.x() / w, 0.0, 1.0);
+        layer->origin_y = (float)std::clamp(drag_start_origin_y_ + delta.y() / h, 0.0, 1.0);
+        layer->pos_x.static_value = drag_start_x_ + delta.x();
+        layer->pos_y.static_value = drag_start_y_ + delta.y();
+    } else {
+        QPointF local = canvas_to_layer(*layer, canvas);
+        double left = -drag_start_origin_x_ * drag_start_w_;
+        double right = (1.0 - drag_start_origin_x_) * drag_start_w_;
+        double top = -drag_start_origin_y_ * drag_start_h_;
+        double bottom = (1.0 - drag_start_origin_y_) * drag_start_h_;
+
+        if (drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeSW)
+            left = std::min(local.x(), right - 1.0);
+        else
+            right = std::max(local.x(), left + 1.0);
+
+        if (drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeNE)
+            top = std::min(local.y(), bottom - 1.0);
+        else
+            bottom = std::max(local.y(), top + 1.0);
+
+        double new_w = std::max(1.0, right - left);
+        double new_h = std::max(1.0, bottom - top);
+        if (layer->type == LayerType::Image && layer->lock_aspect_ratio && drag_start_h_ > 0.0f) {
+            double aspect = drag_start_w_ / drag_start_h_;
+            if (std::abs(new_w - drag_start_w_) > std::abs(new_h - drag_start_h_) * aspect)
+                new_h = new_w / aspect;
+            else
+                new_w = new_h * aspect;
+        }
+        layer->rect_width = (float)new_w;
+        layer->rect_height = (float)new_h;
+    }
+
+    dirty_ = true;
+    update();
+    emit layer_geometry_changed();
+}
+
 void CanvasPreview::render_to_pixmap()
 {
     if (!title_) { frame_pixmap_ = QPixmap(); return; }
@@ -439,46 +600,50 @@ void CanvasPreview::render_to_pixmap()
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
-    /* Background */
     if (title_->bg_color >> 24) {
-        QColor bg( (title_->bg_color >> 16) & 0xFF,
-                   (title_->bg_color >>  8) & 0xFF,
-                   (title_->bg_color >>  0) & 0xFF,
-                   (title_->bg_color >> 24) & 0xFF );
+        QColor bg((title_->bg_color >> 16) & 0xFF,
+                  (title_->bg_color >>  8) & 0xFF,
+                  (title_->bg_color >>  0) & 0xFF,
+                  (title_->bg_color >> 24) & 0xFF);
         p.fillRect(img.rect(), bg);
     }
 
     double t = playhead_;
 
-    /* Render each layer */
     for (auto &layer : title_->layers) {
         if (!layer->visible) continue;
         if (t < layer->in_time || t > layer->out_time) continue;
         double lt = t - layer->in_time;
 
-        double px  = layer->pos_x.evaluate(lt);
-        double py  = layer->pos_y.evaluate(lt);
-        double sx  = layer->scale_x.evaluate(lt);
-        double sy  = layer->scale_y.evaluate(lt);
-        double rot = layer->rotation.evaluate(lt);
-        double alpha = layer->opacity.evaluate(lt);
-
         p.save();
-        p.setOpacity(alpha);
-        p.translate(px, py);
-        p.rotate(rot);
-        p.scale(sx, sy);
+        p.setOpacity(layer->opacity.evaluate(lt));
+        p.translate(layer->pos_x.evaluate(lt), layer->pos_y.evaluate(lt));
+        p.rotate(layer->rotation.evaluate(lt));
+        p.scale(layer->scale_x.evaluate(lt), layer->scale_y.evaluate(lt));
+
+        QRectF box = layer_local_rect(*layer);
 
         if (layer->type == LayerType::SolidRect) {
             QColor fc = color_from_argb(layer->fill_color);
-            double rw = layer->rect_width;
-            double rh = layer->rect_height;
-            QRectF r(-rw/2.0, -rh/2.0, rw, rh);
-            if (layer->corner_radius > 0)
-                p.setBrush(fc), p.setPen(Qt::NoPen),
-                p.drawRoundedRect(r, layer->corner_radius, layer->corner_radius);
-            else
-                p.fillRect(r, fc);
+            if (layer->corner_radius > 0) {
+                p.setBrush(fc);
+                p.setPen(Qt::NoPen);
+                p.drawRoundedRect(box, layer->corner_radius, layer->corner_radius);
+            } else {
+                p.fillRect(box, fc);
+            }
+        }
+
+        if (layer->type == LayerType::Image) {
+            QImage image(QString::fromStdString(layer->image_path));
+            if (!image.isNull()) {
+                p.drawImage(box, image);
+            } else {
+                p.setBrush(QColor(0x33, 0x33, 0x33));
+                p.setPen(QPen(QColor(0xff, 0x55, 0x55), 2));
+                p.drawRect(box);
+                p.drawText(box, Qt::AlignCenter, "Missing Image");
+            }
         }
 
         if (layer->type == LayerType::Image) {
@@ -509,20 +674,7 @@ void CanvasPreview::render_to_pixmap()
             Qt::AlignmentFlag va = Qt::AlignVCenter;
             if (layer->align_v == 0) va = Qt::AlignTop;
             if (layer->align_v == 2) va = Qt::AlignBottom;
-            /* Draw centred on origin */
-            QRectF tr(-title_->width/2.0, -title_->height/2.0,
-                       title_->width, title_->height);
-            p.drawText(tr, ha | va,
-                       QString::fromStdString(layer->text_content));
-        }
-
-        /* Selection box */
-        if (layer->id == sel_layer_id_) {
-            p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(QColor(0,120,255,220), 1.5 / sx,
-                          Qt::DashLine));
-            QRectF sel(-40,-20,80,40);
-            p.drawRect(sel);
+            p.drawText(box, ha | va, QString::fromStdString(layer->text_content));
         }
 
         p.restore();
@@ -540,50 +692,111 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     if (!title_) return;
 
     if (dirty_) render_to_pixmap();
-
     if (frame_pixmap_.isNull()) return;
 
-    /* Fit-in-view with aspect ratio */
-    double tw = title_->width, th = title_->height;
-    double scale = std::min((double)width() / tw, (double)height() / th) * zoom_;
-    int dw = (int)(tw * scale), dh = (int)(th * scale);
-    int ox = (width()  - dw) / 2;
-    int oy = (height() - dh) / 2;
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    int dw = (int)(title_->width * scale);
+    int dh = (int)(title_->height * scale);
+    int ox = (int)origin.x();
+    int oy = (int)origin.y();
 
-    /* Checkerboard for alpha */
-    p.setBrush(QBrush(QColor(0x44,0x44,0x44)));
+    p.setBrush(QBrush(QColor(0x44, 0x44, 0x44)));
     p.setPen(Qt::NoPen);
     for (int cy = oy; cy < oy + dh; cy += 12)
         for (int cx = ox; cx < ox + dw; cx += 12)
-            if ((((cx-ox)/12)+((cy-oy)/12)) % 2 == 0)
+            if ((((cx - ox) / 12) + ((cy - oy) / 12)) % 2 == 0)
                 p.drawRect(cx, cy, 12, 12);
 
     p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
+
+    auto layer = selected_layer();
+    if (!layer) return;
+
+    double lt = playhead_ - layer->in_time;
+    QRectF box = layer_local_rect(*layer);
+    double handle = 8.0 / std::max(0.1, scale);
+
+    p.save();
+    QPointF layer_origin = canvas_to_view(QPointF(layer->pos_x.evaluate(lt),
+                                                  layer->pos_y.evaluate(lt)));
+    p.translate(layer_origin);
+    p.rotate(layer->rotation.evaluate(lt));
+    p.scale(scale * layer->scale_x.evaluate(lt),
+            scale * layer->scale_y.evaluate(lt));
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(0, 120, 255, 230), 1.5 / scale, Qt::DashLine));
+    p.drawRect(box);
+
+    p.setPen(QPen(QColor(0, 120, 255, 255), 1.0 / scale));
+    p.setBrush(QColor(255, 255, 255));
+    for (const QPointF &pt : {box.topLeft(), box.topRight(), box.bottomLeft(), box.bottomRight()})
+        p.drawRect(QRectF(pt.x() - handle / 2.0, pt.y() - handle / 2.0, handle, handle));
+
+    p.setPen(QPen(QColor(255, 160, 0), 1.5 / scale));
+    p.setBrush(QColor(255, 220, 80));
+    p.drawEllipse(QPointF(0, 0), handle * 0.45, handle * 0.45);
+    p.drawLine(QPointF(-handle, 0), QPointF(handle, 0));
+    p.drawLine(QPointF(0, -handle), QPointF(0, handle));
+    p.restore();
 }
 
 void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
-    /* Hit-test layers (simple bounding-box, top→bottom) */
-    if (!title_) return;
-    double tw = title_->width, th = title_->height;
-    double scale = std::min((double)width() / tw, (double)height() / th);
-    int ox = (int)((width()  - tw * scale) / 2);
-    int oy = (int)((height() - th * scale) / 2);
+    if (!title_ || ev->button() != Qt::LeftButton) return;
 
-    double cx = (ev->pos().x() - ox) / scale;
-    double cy = (ev->pos().y() - oy) / scale;
-
-    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
-        auto &l = *it;
-        if (!l->visible) continue;
-        double px = l->pos_x.evaluate(playhead_);
-        double py = l->pos_y.evaluate(playhead_);
-        double hw = (l->type == LayerType::Text) ? 180.0 : std::max(40.0f, l->rect_width / 2.0f);
-        double hh = (l->type == LayerType::Text) ? 60.0 : std::max(30.0f, l->rect_height / 2.0f);
-        if (std::abs(cx - px) < hw && std::abs(cy - py) < hh) {
-            emit layer_clicked(l->id);
-            break;
+    drag_mode_ = hit_test_selected(ev->pos());
+    if (drag_mode_ == DragMode::None) {
+        QPointF canvas = view_to_canvas(ev->pos());
+        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+            auto &l = *it;
+            if (!l->visible || l->locked) continue;
+            QPointF local = canvas_to_layer(*l, canvas);
+            if (layer_local_rect(*l).contains(local)) {
+                emit layer_clicked(l->id);
+                sel_layer_id_ = l->id;
+                drag_mode_ = DragMode::Move;
+                break;
+            }
         }
+    }
+
+    auto layer = selected_layer();
+    if (!layer || drag_mode_ == DragMode::None) return;
+
+    drag_start_canvas_ = view_to_canvas(ev->pos());
+    double lt = playhead_ - layer->in_time;
+    drag_start_x_ = layer->pos_x.evaluate(lt);
+    drag_start_y_ = layer->pos_y.evaluate(lt);
+    drag_start_w_ = std::max(1.0f, layer->rect_width);
+    drag_start_h_ = std::max(1.0f, layer->rect_height);
+    drag_start_origin_x_ = layer->origin_x;
+    drag_start_origin_y_ = layer->origin_y;
+    setCursor(drag_mode_ == DragMode::Move ? Qt::ClosedHandCursor : Qt::SizeFDiagCursor);
+    ev->accept();
+}
+
+void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
+{
+    if (drag_mode_ != DragMode::None && (ev->buttons() & Qt::LeftButton)) {
+        apply_drag(ev->pos());
+        ev->accept();
+        return;
+    }
+
+    DragMode mode = hit_test_selected(ev->pos());
+    if (mode == DragMode::Move) setCursor(Qt::OpenHandCursor);
+    else if (mode == DragMode::Origin) setCursor(Qt::CrossCursor);
+    else if (mode != DragMode::None) setCursor(Qt::SizeFDiagCursor);
+    else unsetCursor();
+}
+
+void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
+{
+    if (ev->button() == Qt::LeftButton && drag_mode_ != DragMode::None) {
+        drag_mode_ = DragMode::None;
+        unsetCursor();
+        ev->accept();
     }
 }
 
@@ -924,11 +1137,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_py_      = mk_dspin(-9999, 9999, 1.0);
     spn_rot_     = mk_dspin(-360,  360,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
+    spn_origin_x_ = mk_dspin(0.0, 1.0, 0.05);
+    spn_origin_y_ = mk_dspin(0.0, 1.0, 0.05);
+    spn_origin_x_->setDecimals(2);
+    spn_origin_y_->setDecimals(2);
+    spn_origin_x_->setToolTip("Horizontal origin: 0=left, 0.5=center, 1=right.");
+    spn_origin_y_->setToolTip("Vertical origin: 0=top, 0.5=center, 1=bottom.");
 
     tfl->addRow("X:",       spn_px_);
     tfl->addRow("Y:",       spn_py_);
     tfl->addRow("Rotation:",spn_rot_);
     tfl->addRow("Opacity:", spn_opacity_);
+    tfl->addRow("Origin X:", spn_origin_x_);
+    tfl->addRow("Origin Y:", spn_origin_y_);
     vl->addWidget(tform_box);
 
     /* ── Text ── */
@@ -998,8 +1219,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                      "border-radius:3px;padding:3px 8px;}");
     spn_layer_w_->setToolTip("For image layers, this is the displayed width.");
     spn_layer_h_->setToolTip("For image layers, this is the displayed height.");
+    chk_lock_aspect_ = new QCheckBox("Lock aspect ratio", inner);
+    chk_lock_aspect_->setStyleSheet("color:#ccc;");
     ifl->addRow("Path:", edit_image_path_);
     ifl->addRow("", btn_pick_image_);
+    ifl->addRow("", chk_lock_aspect_);
     vl->addWidget(image_box_);
 
     vl->addStretch();
@@ -1023,6 +1247,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(spn_opacity_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
                 if (layer_) { layer_->opacity.static_value = v; emit_change(); }
+            });
+    connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->origin_x = (float)v; emit_change(); }
+            });
+    connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->origin_y = (float)v; emit_change(); }
             });
     connect(txt_content_, &QLineEdit::textChanged,
             this, [this, emit_change](const QString &s){
@@ -1057,11 +1289,29 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             });
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
-                if (layer_) { layer_->rect_width = (float)v; emit_change(); }
+                if (!layer_) return;
+                double old_w = std::max(1.0f, layer_->rect_width);
+                double old_h = std::max(1.0f, layer_->rect_height);
+                layer_->rect_width = (float)v;
+                if (layer_->type == LayerType::Image && layer_->lock_aspect_ratio && old_h > 0.0) {
+                    layer_->rect_height = (float)(v * old_h / old_w);
+                    QSignalBlocker block(spn_layer_h_);
+                    spn_layer_h_->setValue(layer_->rect_height);
+                }
+                emit_change();
             });
     connect(spn_layer_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
-                if (layer_) { layer_->rect_height = (float)v; emit_change(); }
+                if (!layer_) return;
+                double old_w = std::max(1.0f, layer_->rect_width);
+                double old_h = std::max(1.0f, layer_->rect_height);
+                layer_->rect_height = (float)v;
+                if (layer_->type == LayerType::Image && layer_->lock_aspect_ratio && old_h > 0.0) {
+                    layer_->rect_width = (float)(v * old_w / old_h);
+                    QSignalBlocker block(spn_layer_w_);
+                    spn_layer_w_->setValue(layer_->rect_width);
+                }
+                emit_change();
             });
     connect(spn_rect_corner_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
@@ -1081,6 +1331,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(edit_image_path_, &QLineEdit::textChanged,
             this, [this, emit_change](const QString &path){
                 if (layer_) { layer_->image_path = path.toStdString(); emit_change(); }
+            });
+    connect(chk_lock_aspect_, &QCheckBox::toggled,
+            this, [this, emit_change](bool v){
+                if (layer_) { layer_->lock_aspect_ratio = v; emit_change(); }
             });
     connect(btn_pick_image_, &QPushButton::clicked,
             this, [this, emit_change]() {
@@ -1124,6 +1378,9 @@ void PropertiesPanel::load_values()
         spn_py_->setValue(0.0);
         spn_rot_->setValue(0.0);
         spn_opacity_->setValue(1.0);
+        spn_origin_x_->setValue(0.5);
+        spn_origin_y_->setValue(0.5);
+        chk_lock_aspect_->setChecked(true);
         txt_content_->clear();
         edit_image_path_->clear();
         style_color_button(btn_text_color_, 0xFFFFFFFF);
@@ -1142,8 +1399,8 @@ void PropertiesPanel::load_values()
     const bool is_rect = layer_->type == LayerType::SolidRect;
     const bool is_image = layer_->type == LayerType::Image;
     text_box_->setVisible(is_text);
-    rect_box_->setVisible(is_rect || is_image);
-    rect_box_->setTitle(is_image ? "Image Size" : "Rectangle");
+    rect_box_->setVisible(is_text || is_rect || is_image);
+    rect_box_->setTitle(is_text ? "Text Box" : (is_image ? "Image Size" : "Rectangle"));
     spn_rect_corner_->setVisible(is_rect);
     btn_fill_color_->setVisible(is_rect);
     if (auto *form = qobject_cast<QFormLayout *>(rect_box_->layout())) {
@@ -1166,6 +1423,16 @@ void PropertiesPanel::load_values()
     spn_opacity_->setValue(layer_->opacity.is_animated()
                            ? layer_->opacity.evaluate(playhead_)
                            : layer_->opacity.static_value);
+    spn_origin_x_->setValue(layer_->origin_x);
+    spn_origin_y_->setValue(layer_->origin_y);
+
+    spn_layer_w_->setValue(layer_->rect_width);
+    spn_layer_h_->setValue(layer_->rect_height);
+    spn_rect_corner_->setValue(layer_->corner_radius);
+    edit_image_path_->setText(QString::fromStdString(layer_->image_path));
+    chk_lock_aspect_->setChecked(layer_->lock_aspect_ratio);
+    style_color_button(btn_text_color_, layer_->text_color);
+    style_color_button(btn_fill_color_, layer_->fill_color);
 
     spn_layer_w_->setValue(layer_->rect_width);
     spn_layer_h_->setValue(layer_->rect_height);

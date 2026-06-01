@@ -28,6 +28,7 @@
 #include <cmath>
 #include <chrono>
 #include <vector>
+#include <algorithm>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -81,21 +82,25 @@ static void unpack_color(uint32_t c,
 static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
                                int canvas_w, int canvas_h)
 {
+    (void)canvas_w;
+    (void)canvas_h;
+
     double px = layer.pos_x.evaluate(t);
     double py = layer.pos_y.evaluate(t);
     double sx = layer.scale_x.evaluate(t);
     double sy = layer.scale_y.evaluate(t);
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
+    double box_w = std::max(1.0f, layer.rect_width);
+    double box_h = std::max(1.0f, layer.rect_height);
 
     cairo_save(cr);
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    /* Build Pango layout */
+
     PangoLayout *layout = pango_cairo_create_layout(cr);
 
-    /* Font */
     PangoFontDescription *fdesc =
         pango_font_description_from_string(layer.font_family.c_str());
     pango_font_description_set_size(fdesc,
@@ -108,26 +113,23 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     pango_font_description_free(fdesc);
 
     pango_layout_set_text(layout, layer.text_content.c_str(), -1);
-    pango_layout_set_width(layout, canvas_w * PANGO_SCALE);
+    pango_layout_set_width(layout, (int)(box_w * PANGO_SCALE));
 
-    /* Horizontal alignment */
     PangoAlignment palign = PANGO_ALIGN_CENTER;
     if (layer.align_h == 0) palign = PANGO_ALIGN_LEFT;
     if (layer.align_h == 2) palign = PANGO_ALIGN_RIGHT;
     pango_layout_set_alignment(layout, palign);
 
-    /* Measure for vertical offset */
     int pw, ph;
     pango_layout_get_pixel_size(layout, &pw, &ph);
+    (void)pw;
 
-    double off_y = 0.0;
-    if (layer.align_v == 1) off_y = -ph / 2.0;
-    if (layer.align_v == 2) off_y = -(double)ph;
-    double off_x = -(double)canvas_w / 2.0;  /* layout width = canvas_w */
+    double text_x = -layer.origin_x * box_w;
+    double text_y = -layer.origin_y * box_h;
+    if (layer.align_v == 1) text_y += (box_h - ph) / 2.0;
+    if (layer.align_v == 2) text_y += box_h - ph;
+    cairo_translate(cr, text_x, text_y);
 
-    cairo_translate(cr, off_x, off_y);
-
-    /* Stroke */
     if (layer.stroke_width > 0.01f) {
         double sr, sg, sb, sa;
         unpack_color(layer.stroke_color, sr, sg, sb, sa);
@@ -137,7 +139,6 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
         cairo_stroke(cr);
     }
 
-    /* Fill */
     double fr, fg, fb, fa;
     unpack_color(layer.text_color, fr, fg, fb, fa);
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
@@ -156,16 +157,20 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
 
-    double w = layer.rect_width  * sx;
-    double h = layer.rect_height * sy;
-    double r = layer.corner_radius;
+    double w = std::max(1.0f, layer.rect_width);
+    double h = std::max(1.0f, layer.rect_height);
+    double r = std::min<double>(layer.corner_radius, std::min(w, h) / 2.0);
+    double x = -layer.origin_x * w;
+    double y = -layer.origin_y * h;
 
     double fr, fg, fb, fa;
     unpack_color(layer.fill_color, fr, fg, fb, fa);
 
     cairo_save(cr);
-    cairo_translate(cr, px - w / 2.0, py - h / 2.0);
+    cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
+    cairo_scale(cr, sx, sy);
+    cairo_translate(cr, x, y);
 
     if (r > 0.0) {
         cairo_new_sub_path(cr);
@@ -211,8 +216,8 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx * (w / argb.width()), sy * (h / argb.height()));
     cairo_set_source_surface(cr, img_surface,
-                             -argb.width() / 2.0,
-                             -argb.height() / 2.0);
+                             -layer.origin_x * argb.width(),
+                             -layer.origin_y * argb.height());
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
 
