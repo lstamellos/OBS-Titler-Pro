@@ -64,7 +64,7 @@ function Assert-UniqueSourceDefinition {
     foreach ($Definition in $Definitions) {
         $Count = ([regex]::Matches($Text, [regex]::Escape($Definition))).Count
         if ($Count -gt 1) {
-            Write-Error "Duplicate definition detected in $File: '$Definition' appears $Count times. Remove the duplicate body before building."
+            Write-Error "Duplicate definition detected in ${File}: '$Definition' appears $Count times. Remove the duplicate body before building."
             exit 1
         }
     }
