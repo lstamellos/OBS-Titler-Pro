@@ -447,6 +447,11 @@ void TitleEditor::open_title(const std::string &tid)
     else
         props_->set_layer(nullptr, playhead_);
 
+    if (!title_->layers.empty())
+        on_layer_selected(title_->layers.back()->id);
+    else
+        props_->set_layer(nullptr, playhead_);
+
     on_playhead_changed(0.0);
 }
 
