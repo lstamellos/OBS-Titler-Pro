@@ -45,6 +45,40 @@ $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
 Write-Host "=== Starting obs-titles build process ==="
 
+
+# Guard against accidental duplicate out-of-class bodies in the large editor
+# translation unit. MSVC reports these late during compilation, so fail early
+# with the exact repeated definitions that have previously broken Windows builds.
+function Assert-UniqueSourceDefinition {
+    param(
+        [string]$File,
+        [string[]]$Definitions
+    )
+
+    if (-not (Test-Path $File)) {
+        Write-Error "Source file not found: $File"
+        exit 1
+    }
+
+    $Text = Get-Content -Raw -Path $File
+    foreach ($Definition in $Definitions) {
+        $Count = ([regex]::Matches($Text, [regex]::Escape($Definition))).Count
+        if ($Count -gt 1) {
+            Write-Error "Duplicate definition detected in $File: '$Definition' appears $Count times. Remove the duplicate body before building."
+            exit 1
+        }
+    }
+}
+
+$TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
+Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
+    "void TimelineWidget::contextMenuEvent(",
+    "void TimelineWidget::wheelEvent(",
+    "TitlePropertiesPanel::TitlePropertiesPanel(",
+    "void TitlePropertiesPanel::set_title(",
+    "void TitlePropertiesPanel::load_values("
+)
+
 # 1. Verify CMake and Visual Studio
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
     Write-Error "CMake not found. Please install CMake and add it to your PATH."
