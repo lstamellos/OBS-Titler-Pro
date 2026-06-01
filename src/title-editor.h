@@ -253,23 +253,14 @@ private:
     QPushButton     *btn_text_color_ = nullptr;
 
     /* Rectangle/Image geometry controls */
-    QDoubleSpinBox  *spn_rect_w_   = nullptr;
-    QDoubleSpinBox  *spn_rect_h_   = nullptr;
-    QDoubleSpinBox  *spn_corner_   = nullptr;
+    QDoubleSpinBox  *spn_layer_w_   = nullptr;
+    QDoubleSpinBox  *spn_layer_h_   = nullptr;
+    QDoubleSpinBox  *spn_rect_corner_   = nullptr;
     QPushButton     *btn_fill_color_ = nullptr;
 
     /* Image controls */
-    QLineEdit       *txt_image_path_ = nullptr;
-    QPushButton     *btn_browse_image_ = nullptr;
-
-    /* Rectangle/Image geometry controls */
-    QDoubleSpinBox  *spn_rect_w_   = nullptr;
-    QDoubleSpinBox  *spn_rect_h_   = nullptr;
-    QDoubleSpinBox  *spn_corner_   = nullptr;
-
-    /* Image controls */
-    QLineEdit       *txt_image_path_ = nullptr;
-    QPushButton     *btn_browse_image_ = nullptr;
+    QLineEdit       *edit_image_path_ = nullptr;
+    QPushButton     *btn_pick_image_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;

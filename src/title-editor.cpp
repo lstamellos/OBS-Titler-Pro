@@ -976,12 +976,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     rect_box_->setStyleSheet(tform_box->styleSheet());
     auto *rfl = new QFormLayout(rect_box_);
     rfl->setSpacing(3);
-    spn_rect_w_ = mk_dspin(1.0, 9999.0, 10.0);
-    spn_rect_h_ = mk_dspin(1.0, 9999.0, 10.0);
-    spn_corner_ = mk_dspin(0.0, 1000.0, 1.0);
-    rfl->addRow("Width:", spn_rect_w_);
-    rfl->addRow("Height:", spn_rect_h_);
-    rfl->addRow("Corner:", spn_corner_);
+    spn_layer_w_ = mk_dspin(1.0, 9999.0, 10.0);
+    spn_layer_h_ = mk_dspin(1.0, 9999.0, 10.0);
+    spn_rect_corner_ = mk_dspin(0.0, 1000.0, 1.0);
+    rfl->addRow("Width:", spn_layer_w_);
+    rfl->addRow("Height:", spn_layer_h_);
+    rfl->addRow("Corner:", spn_rect_corner_);
     btn_fill_color_ = new QPushButton(inner);
     rfl->addRow("Color:", btn_fill_color_);
     vl->addWidget(rect_box_);
@@ -991,15 +991,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     image_box_->setStyleSheet(tform_box->styleSheet());
     auto *ifl = new QFormLayout(image_box_);
     ifl->setSpacing(3);
-    txt_image_path_ = new QLineEdit(inner);
-    txt_image_path_->setStyleSheet(txt_content_->styleSheet());
-    btn_browse_image_ = new QPushButton("Browse…", inner);
-    btn_browse_image_->setStyleSheet("QPushButton{color:#fff;background:#0078d4;border:none;"
+    edit_image_path_ = new QLineEdit(inner);
+    edit_image_path_->setStyleSheet(txt_content_->styleSheet());
+    btn_pick_image_ = new QPushButton("Browse…", inner);
+    btn_pick_image_->setStyleSheet("QPushButton{color:#fff;background:#0078d4;border:none;"
                                      "border-radius:3px;padding:3px 8px;}");
-    spn_rect_w_->setToolTip("For image layers, this is the displayed width.");
-    spn_rect_h_->setToolTip("For image layers, this is the displayed height.");
-    ifl->addRow("Path:", txt_image_path_);
-    ifl->addRow("", btn_browse_image_);
+    spn_layer_w_->setToolTip("For image layers, this is the displayed width.");
+    spn_layer_h_->setToolTip("For image layers, this is the displayed height.");
+    ifl->addRow("Path:", edit_image_path_);
+    ifl->addRow("", btn_pick_image_);
     vl->addWidget(image_box_);
 
     vl->addStretch();
@@ -1055,15 +1055,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 style_color_button(btn_text_color_, layer_->text_color);
                 emit_change();
             });
-    connect(spn_rect_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+    connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
                 if (layer_) { layer_->rect_width = (float)v; emit_change(); }
             });
-    connect(spn_rect_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+    connect(spn_layer_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
                 if (layer_) { layer_->rect_height = (float)v; emit_change(); }
             });
-    connect(spn_corner_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+    connect(spn_rect_corner_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
                 if (layer_) { layer_->corner_radius = (float)v; emit_change(); }
             });
@@ -1078,11 +1078,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 style_color_button(btn_fill_color_, layer_->fill_color);
                 emit_change();
             });
-    connect(txt_image_path_, &QLineEdit::textChanged,
+    connect(edit_image_path_, &QLineEdit::textChanged,
             this, [this, emit_change](const QString &path){
                 if (layer_) { layer_->image_path = path.toStdString(); emit_change(); }
             });
-    connect(btn_browse_image_, &QPushButton::clicked,
+    connect(btn_pick_image_, &QPushButton::clicked,
             this, [this, emit_change]() {
                 if (!layer_) return;
                 QString path = QFileDialog::getOpenFileName(
@@ -1125,12 +1125,12 @@ void PropertiesPanel::load_values()
         spn_rot_->setValue(0.0);
         spn_opacity_->setValue(1.0);
         txt_content_->clear();
-        txt_image_path_->clear();
+        edit_image_path_->clear();
         style_color_button(btn_text_color_, 0xFFFFFFFF);
         style_color_button(btn_fill_color_, 0xFF222222);
-        spn_rect_w_->setValue(1.0);
-        spn_rect_h_->setValue(1.0);
-        spn_corner_->setValue(0.0);
+        spn_layer_w_->setValue(1.0);
+        spn_layer_h_->setValue(1.0);
+        spn_rect_corner_->setValue(0.0);
         spn_size_->setValue(72);
         chk_bold_->setChecked(false);
         chk_italic_->setChecked(false);
@@ -1144,10 +1144,10 @@ void PropertiesPanel::load_values()
     text_box_->setVisible(is_text);
     rect_box_->setVisible(is_rect || is_image);
     rect_box_->setTitle(is_image ? "Image Size" : "Rectangle");
-    spn_corner_->setVisible(is_rect);
+    spn_rect_corner_->setVisible(is_rect);
     btn_fill_color_->setVisible(is_rect);
     if (auto *form = qobject_cast<QFormLayout *>(rect_box_->layout())) {
-        if (auto *label = form->labelForField(spn_corner_))
+        if (auto *label = form->labelForField(spn_rect_corner_))
             label->setVisible(is_rect);
         if (auto *label = form->labelForField(btn_fill_color_))
             label->setVisible(is_rect);
@@ -1167,10 +1167,10 @@ void PropertiesPanel::load_values()
                            ? layer_->opacity.evaluate(playhead_)
                            : layer_->opacity.static_value);
 
-    spn_rect_w_->setValue(layer_->rect_width);
-    spn_rect_h_->setValue(layer_->rect_height);
-    spn_corner_->setValue(layer_->corner_radius);
-    txt_image_path_->setText(QString::fromStdString(layer_->image_path));
+    spn_layer_w_->setValue(layer_->rect_width);
+    spn_layer_h_->setValue(layer_->rect_height);
+    spn_rect_corner_->setValue(layer_->corner_radius);
+    edit_image_path_->setText(QString::fromStdString(layer_->image_path));
     style_color_button(btn_text_color_, layer_->text_color);
     style_color_button(btn_fill_color_, layer_->fill_color);
 
