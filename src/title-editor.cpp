@@ -1878,6 +1878,105 @@ void TimelineWidget::wheelEvent(QWheelEvent *ev)
     ev->accept();
 }
 
+void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
+{
+    if (!title_) return;
+
+    int rh = ruler_height();
+    int rowh = row_height();
+    if (ev->pos().y() < rh) return;
+
+    int row = (ev->pos().y() - rh) / rowh;
+    if (row < 0 || row >= (int)title_->layers.size()) return;
+
+    auto layer_it = title_->layers.rbegin() + row;
+    if (layer_it == title_->layers.rend()) return;
+    auto &layer = *layer_it;
+
+    constexpr int kHitRadius = 7;
+    AnimatedProperty *hit_prop = nullptr;
+    Keyframe *hit_keyframe = nullptr;
+    for (auto *prop : timeline_properties(*layer)) {
+        for (auto &kf : prop->keyframes) {
+            int kx = time_to_x(layer->in_time + kf.time);
+            int ky = rh + row * rowh + rowh / 2;
+            if (std::abs(ev->pos().x() - kx) <= kHitRadius &&
+                std::abs(ev->pos().y() - ky) <= kHitRadius) {
+                hit_prop = prop;
+                hit_keyframe = &kf;
+                break;
+            }
+        }
+        if (hit_keyframe) break;
+    }
+
+    if (!hit_prop || !hit_keyframe) return;
+
+    QMenu menu(this);
+    menu.setTitle(QString("%1 easing").arg(QString::fromStdString(hit_prop->name)));
+
+    auto add_easing = [&](const QString &label, EasingType easing) {
+        QAction *action = menu.addAction(label);
+        action->setCheckable(true);
+        action->setChecked(hit_keyframe->easing == easing);
+        action->setData((int)easing);
+        QPixmap swatch(12, 12);
+        swatch.fill(Qt::transparent);
+        QPainter painter(&swatch);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setBrush(keyframe_color(easing));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(1, 1, 10, 10);
+        action->setIcon(QIcon(swatch));
+        return action;
+    };
+
+    add_easing("Linear", EasingType::Linear);
+    add_easing("Ease In", EasingType::EaseIn);
+    add_easing("Ease Out", EasingType::EaseOut);
+    add_easing("Ease In/Out", EasingType::EaseInOut);
+    add_easing("Bezier", EasingType::Bezier);
+    add_easing("Step / Hold", EasingType::Hold);
+
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (!chosen) return;
+
+    hit_keyframe->easing = (EasingType)chosen->data().toInt();
+    update();
+    emit keyframe_easing_changed();
+}
+
+void TimelineWidget::wheelEvent(QWheelEvent *ev)
+{
+    if (!title_) return;
+
+    const QPoint angle = ev->angleDelta();
+    if (ev->modifiers() & Qt::ShiftModifier) {
+        int delta = angle.x() != 0 ? angle.x() : angle.y();
+        scroll_x_ -= delta;
+        clamp_scroll();
+        update();
+        ev->accept();
+        return;
+    }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    int cursor_x = (int)std::round(ev->position().x());
+#else
+    int cursor_x = ev->pos().x();
+#endif
+    double anchor_time = (cursor_x + scroll_x_) / pixels_per_sec_;
+    int delta = angle.y() != 0 ? angle.y() : angle.x();
+    if (delta == 0) return;
+
+    double factor = std::pow(1.0015, delta);
+    pixels_per_sec_ = std::clamp(pixels_per_sec_ * factor, 25.0, 1200.0);
+    scroll_x_ = (int)std::round(anchor_time * pixels_per_sec_) - cursor_x;
+    clamp_scroll();
+    update();
+    ev->accept();
+}
+
 void TimelineWidget::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
@@ -2001,6 +2100,56 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
     drag_keyframe_index_ = -1;
     unsetCursor();
     if (changed) emit keyframe_easing_changed();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ *  TitlePropertiesPanel
+ * ══════════════════════════════════════════════════════════════════ */
+TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
+    : QGroupBox("Title", parent)
+{
+    setStyleSheet(
+        "QGroupBox{color:#aaa;background:#1a1a1a;border:1px solid #333;"
+        "border-radius:3px;margin-top:6px;font-size:10px;padding-top:4px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:8px;}"
+        "QDoubleSpinBox{color:#ccc;background:#2a2a2a;border:none;"
+        "border-radius:2px;padding:2px;}");
+
+    auto *fl = new QFormLayout(this);
+    fl->setContentsMargins(8, 10, 8, 6);
+    fl->setSpacing(3);
+
+    spn_duration_ = new QDoubleSpinBox(this);
+    spn_duration_->setRange(0.1, 3600.0);
+    spn_duration_->setSingleStep(0.5);
+    spn_duration_->setDecimals(2);
+    spn_duration_->setSuffix(" s");
+    fl->addRow("Length:", spn_duration_);
+
+    connect(spn_duration_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                if (!title_ || loading_values_) return;
+                double old_duration = title_->duration;
+                title_->duration = v;
+                for (auto &layer : title_->layers) {
+                    if (std::abs(layer->out_time - old_duration) < 0.001 || layer->out_time > v)
+                        layer->out_time = v;
+                }
+                emit title_changed();
+            });
+}
+
+void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
+{
+    title_ = t;
+    load_values();
+}
+
+void TitlePropertiesPanel::load_values()
+{
+    loading_values_ = true;
+    spn_duration_->setValue(title_ ? title_->duration : 5.0);
+    loading_values_ = false;
 }
 
 /* ══════════════════════════════════════════════════════════════════
