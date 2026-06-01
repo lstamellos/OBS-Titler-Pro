@@ -168,6 +168,8 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     layer->type = LayerType::Text;
     layer->pos_x.static_value = 960.0;
     layer->pos_y.static_value = 540.0;
+    layer->rect_width = 960.0f;
+    layer->rect_height = 160.0f;
     layer->text_content = name;
     t->layers.push_back(layer);
 
@@ -286,7 +288,10 @@ static json layer_to_json(const Layer &l)
     j["rect_width"]    = l.rect_width;
     j["rect_height"]   = l.rect_height;
     j["corner_radius"] = l.corner_radius;
+    j["origin_x"]      = l.origin_x;
+    j["origin_y"]      = l.origin_y;
     j["image_path"]    = l.image_path;
+    j["lock_aspect_ratio"] = l.lock_aspect_ratio;
     return j;
 }
 
@@ -323,7 +328,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     l->rect_width    = j.value("rect_width",    1920.0f);
     l->rect_height   = j.value("rect_height",   100.0f);
     l->corner_radius = j.value("corner_radius", 0.0f);
+    l->origin_x      = j.value("origin_x",      0.5f);
+    l->origin_y      = j.value("origin_y",      0.5f);
     l->image_path    = j.value("image_path",    "");
+    l->lock_aspect_ratio = j.value("lock_aspect_ratio", true);
     return l;
 }
 
