@@ -646,6 +646,20 @@ void CanvasPreview::render_to_pixmap()
             }
         }
 
+        if (layer->type == LayerType::Image) {
+            QImage image(QString::fromStdString(layer->image_path));
+            QRectF target(-layer->rect_width / 2.0, -layer->rect_height / 2.0,
+                          layer->rect_width, layer->rect_height);
+            if (!image.isNull()) {
+                p.drawImage(target, image);
+            } else {
+                p.setBrush(QColor(0x33, 0x33, 0x33));
+                p.setPen(QPen(QColor(0xff, 0x55, 0x55), 2));
+                p.drawRect(target);
+                p.drawText(target, Qt::AlignCenter, "Missing Image");
+            }
+        }
+
         if (layer->type == LayerType::Text) {
             QColor tc = color_from_argb(layer->text_color);
             QFont f(QString::fromStdString(layer->font_family));
@@ -1417,6 +1431,13 @@ void PropertiesPanel::load_values()
     spn_rect_corner_->setValue(layer_->corner_radius);
     edit_image_path_->setText(QString::fromStdString(layer_->image_path));
     chk_lock_aspect_->setChecked(layer_->lock_aspect_ratio);
+    style_color_button(btn_text_color_, layer_->text_color);
+    style_color_button(btn_fill_color_, layer_->fill_color);
+
+    spn_layer_w_->setValue(layer_->rect_width);
+    spn_layer_h_->setValue(layer_->rect_height);
+    spn_rect_corner_->setValue(layer_->corner_radius);
+    edit_image_path_->setText(QString::fromStdString(layer_->image_path));
     style_color_button(btn_text_color_, layer_->text_color);
     style_color_button(btn_fill_color_, layer_->fill_color);
 
