@@ -11,6 +11,7 @@
 #include <obs-module.h>
 
 #include <QPainter>
+#include <QImage>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QVBoxLayout>
@@ -28,9 +29,11 @@
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QColorDialog>
+#include <QFileDialog>
 #include <QFontDatabase>
 #include <QScrollArea>
 #include <QFrame>
+#include <QSignalBlocker>
 #include <cmath>
 #include <algorithm>
 
@@ -45,6 +48,34 @@ static const QColor C_TEXT     { 0xcccccc };
 static const QColor C_RULER    { 0x1e1e1e };
 static const QColor C_KF_DOT   { 0xf0a020 };
 static const QColor C_PLAYHEAD { 0xff4444 };
+
+
+static QColor color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xFF,
+                  (argb >> 8) & 0xFF,
+                  argb & 0xFF,
+                  (argb >> 24) & 0xFF);
+}
+
+static uint32_t argb_from_color(const QColor &color)
+{
+    return ((uint32_t)color.alpha() << 24) |
+           ((uint32_t)color.red() << 16) |
+           ((uint32_t)color.green() << 8) |
+           (uint32_t)color.blue();
+}
+
+static void style_color_button(QPushButton *button, uint32_t argb)
+{
+    QColor c = color_from_argb(argb);
+    button->setText(c.name(QColor::HexArgb));
+    button->setStyleSheet(QString(
+        "QPushButton{color:%1;background:%2;border:1px solid #555;"
+        "border-radius:3px;padding:3px 8px;}")
+        .arg(c.lightness() < 128 ? "#fff" : "#000")
+        .arg(c.name(QColor::HexArgb)));
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor
@@ -139,23 +170,62 @@ void TitleEditor::build_ui()
             this, [this](LayerType type) {
                 if (!title_) return;
                 auto l = std::make_shared<Layer>();
-                l->id   = title_->id + "_layer_" + std::to_string(title_->layers.size());
-                l->name = (type == LayerType::Text) ? "Text" : "Rectangle";
+                l->id   = TitleDataStore::make_uuid();
+                l->name = (type == LayerType::Text) ? "Text" :
+                          (type == LayerType::Image) ? "Image" : "Rectangle";
                 l->type = type;
+                l->text_content = (type == LayerType::Text) ? "New Text" : "";
                 l->pos_x.static_value = title_->width  / 2.0;
                 l->pos_y.static_value = title_->height / 2.0;
+                l->rect_width = title_->width * 0.5f;
+                l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
+                if (type == LayerType::Image) {
+                    QString path = QFileDialog::getOpenFileName(
+                        this, "Choose Image", QString(),
+                        "Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*)");
+                    if (path.isEmpty()) return;
+                    l->image_path = path.toStdString();
+                    QImage img(path);
+                    if (!img.isNull()) {
+                        l->rect_width = (float)img.width();
+                        l->rect_height = (float)img.height();
+                    }
+                }
                 l->out_time = title_->duration;
                 title_->add_layer(l);
                 layers_->refresh();
+                on_layer_selected(l->id);
+                canvas_->refresh_preview();
                 TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().save();
             });
 
     connect(layers_, &LayerStack::delete_layer_requested,
             this, [this](const std::string &lid) {
                 if (!title_) return;
                 title_->remove_layer(lid);
+                if (sel_layer_id_ == lid) sel_layer_id_.clear();
                 layers_->refresh();
+
+                if (!title_->layers.empty())
+                    on_layer_selected(title_->layers.back()->id);
+                else
+                    props_->set_layer(nullptr, playhead_);
+
+                canvas_->refresh_preview();
                 TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().save();
+            });
+
+    connect(layers_, &LayerStack::layer_visibility_changed,
+            this, [this](const std::string &lid, bool visible) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->visible = visible;
+                    canvas_->refresh_preview();
+                    TitleDataStore::instance().notify_change();
+                    TitleDataStore::instance().save();
+                }
             });
 
     connect(timeline_, &TimelineWidget::playhead_changed,
@@ -219,6 +289,7 @@ void TitleEditor::build_toolbar()
         "QPushButton:hover { background:#1088e4; }");
     connect(btn_save, &QPushButton::clicked, this, [this]() {
         TitleDataStore::instance().save();
+        if (title_) emit title_saved(title_->id);
         setWindowTitle("Title Editor  ·  saved");
     });
     toolbar_->addWidget(btn_save);
@@ -240,6 +311,11 @@ void TitleEditor::open_title(const std::string &tid)
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
+
+    if (!title_->layers.empty())
+        on_layer_selected(title_->layers.back()->id);
+    else
+        props_->set_layer(nullptr, playhead_);
 
     on_playhead_changed(0.0);
 }
@@ -288,6 +364,7 @@ void TitleEditor::tick()
 void TitleEditor::on_layer_selected(const std::string &lid)
 {
     sel_layer_id_ = lid;
+    layers_->set_selected_layer(lid);
     canvas_->set_selected_layer(lid);
     timeline_->set_selected_layer(lid);
 
@@ -313,8 +390,10 @@ void TitleEditor::on_playhead_changed(double t)
 
 void TitleEditor::on_title_modified()
 {
-    canvas_->update();
+    if (title_) setWindowTitle("Title Editor  ·  modified");
+    canvas_->refresh_preview();
     TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -341,6 +420,12 @@ void CanvasPreview::set_playhead(double t)
 void CanvasPreview::set_selected_layer(const std::string &lid)
 {
     sel_layer_id_ = lid; update();
+}
+
+void CanvasPreview::refresh_preview()
+{
+    dirty_ = true;
+    update();
 }
 
 void CanvasPreview::render_to_pixmap()
@@ -385,10 +470,7 @@ void CanvasPreview::render_to_pixmap()
         p.scale(sx, sy);
 
         if (layer->type == LayerType::SolidRect) {
-            QColor fc( (layer->fill_color >> 16) & 0xFF,
-                       (layer->fill_color >>  8) & 0xFF,
-                       (layer->fill_color >>  0) & 0xFF,
-                       (layer->fill_color >> 24) & 0xFF );
+            QColor fc = color_from_argb(layer->fill_color);
             double rw = layer->rect_width;
             double rh = layer->rect_height;
             QRectF r(-rw/2.0, -rh/2.0, rw, rh);
@@ -399,11 +481,22 @@ void CanvasPreview::render_to_pixmap()
                 p.fillRect(r, fc);
         }
 
+        if (layer->type == LayerType::Image) {
+            QImage image(QString::fromStdString(layer->image_path));
+            QRectF target(-layer->rect_width / 2.0, -layer->rect_height / 2.0,
+                          layer->rect_width, layer->rect_height);
+            if (!image.isNull()) {
+                p.drawImage(target, image);
+            } else {
+                p.setBrush(QColor(0x33, 0x33, 0x33));
+                p.setPen(QPen(QColor(0xff, 0x55, 0x55), 2));
+                p.drawRect(target);
+                p.drawText(target, Qt::AlignCenter, "Missing Image");
+            }
+        }
+
         if (layer->type == LayerType::Text) {
-            QColor tc( (layer->text_color >> 16) & 0xFF,
-                       (layer->text_color >>  8) & 0xFF,
-                       (layer->text_color >>  0) & 0xFF,
-                       (layer->text_color >> 24) & 0xFF );
+            QColor tc = color_from_argb(layer->text_color);
             QFont f(QString::fromStdString(layer->font_family));
             f.setPixelSize(layer->font_size);
             f.setBold(layer->font_bold);
@@ -485,7 +578,9 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         if (!l->visible) continue;
         double px = l->pos_x.evaluate(playhead_);
         double py = l->pos_y.evaluate(playhead_);
-        if (std::abs(cx - px) < 60 && std::abs(cy - py) < 40) {
+        double hw = (l->type == LayerType::Text) ? 180.0 : std::max(40.0f, l->rect_width / 2.0f);
+        double hh = (l->type == LayerType::Text) ? 60.0 : std::max(30.0f, l->rect_height / 2.0f);
+        if (std::abs(cx - px) < hw && std::abs(cy - py) < hh) {
             emit layer_clicked(l->id);
             break;
         }
@@ -513,10 +608,11 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
 
     /* header buttons */
     auto *hdr = new QHBoxLayout();
-    btn_add_text_ = new QPushButton("T+",    this);
-    btn_add_rect_ = new QPushButton("▭+",    this);
-    btn_del_      = new QPushButton("✕",     this);
-    for (auto *b : {btn_add_text_, btn_add_rect_, btn_del_}) {
+    btn_add_text_  = new QPushButton("T+",    this);
+    btn_add_rect_  = new QPushButton("▭+",    this);
+    btn_add_image_ = new QPushButton("Img+",  this);
+    btn_del_       = new QPushButton("✕",     this);
+    for (auto *b : {btn_add_text_, btn_add_rect_, btn_add_image_, btn_del_}) {
         b->setFixedWidth(30);
         b->setStyleSheet("QPushButton{color:#ccc;background:#2a2a2a;border:none;"
                          "border-radius:2px;} QPushButton:hover{background:#3a3a3a;}");
@@ -540,10 +636,13 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     vl->addWidget(list_, 1);
 
     connect(btn_add_text_, &QPushButton::clicked, this, &LayerStack::on_add_text);
-    connect(btn_add_rect_, &QPushButton::clicked, this, &LayerStack::on_add_rect);
-    connect(btn_del_,      &QPushButton::clicked, this, &LayerStack::on_delete);
+    connect(btn_add_rect_,  &QPushButton::clicked, this, &LayerStack::on_add_rect);
+    connect(btn_add_image_, &QPushButton::clicked, this, &LayerStack::on_add_image);
+    connect(btn_del_,       &QPushButton::clicked, this, &LayerStack::on_delete);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &LayerStack::on_selection_changed);
+    connect(list_, &QListWidget::itemChanged,
+            this, &LayerStack::on_item_changed);
 }
 
 void LayerStack::set_title(std::shared_ptr<Title> t)
@@ -555,19 +654,46 @@ void LayerStack::refresh() { populate(); }
 
 void LayerStack::populate()
 {
+    QString prev_id = list_->currentItem()
+        ? list_->currentItem()->data(Qt::UserRole).toString()
+        : QString();
+
     list_->blockSignals(true);
     list_->clear();
     if (!title_) { list_->blockSignals(false); return; }
     for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
         auto &l = *it;
         auto *item = new QListWidgetItem(
-            (l->type == LayerType::Text ? "T  " : "▭  ") +
+            (l->type == LayerType::Text ? "T  " :
+             l->type == LayerType::Image ? "Img " : "▭  ") +
             QString::fromStdString(l->name));
         item->setData(Qt::UserRole, QString::fromStdString(l->id));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         item->setCheckState(l->visible ? Qt::Checked : Qt::Unchecked);
         list_->addItem(item);
+        if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||
+            prev_id == item->data(Qt::UserRole).toString())
+            list_->setCurrentItem(item);
     }
     list_->blockSignals(false);
+    on_selection_changed();
+}
+
+void LayerStack::set_selected_layer(const std::string &layer_id)
+{
+    QString qid = QString::fromStdString(layer_id);
+    if (list_->currentItem() &&
+        list_->currentItem()->data(Qt::UserRole).toString() == qid)
+        return;
+
+    QSignalBlocker blocker(list_);
+    for (int i = 0; i < list_->count(); ++i) {
+        auto *item = list_->item(i);
+        if (item->data(Qt::UserRole).toString() == qid) {
+            list_->setCurrentItem(item);
+            return;
+        }
+    }
 }
 
 std::string LayerStack::selected_id() const
@@ -584,6 +710,7 @@ void LayerStack::on_selection_changed()
 
 void LayerStack::on_add_text() { emit add_layer_requested(LayerType::Text); }
 void LayerStack::on_add_rect() { emit add_layer_requested(LayerType::SolidRect); }
+void LayerStack::on_add_image() { emit add_layer_requested(LayerType::Image); }
 
 void LayerStack::on_delete()
 {
@@ -805,9 +932,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     vl->addWidget(tform_box);
 
     /* ── Text ── */
-    auto *txt_box = new QGroupBox("Text", inner);
-    txt_box->setStyleSheet(tform_box->styleSheet());
-    auto *txfl = new QFormLayout(txt_box);
+    text_box_ = new QGroupBox("Text", inner);
+    text_box_->setStyleSheet(tform_box->styleSheet());
+    auto *txfl = new QFormLayout(text_box_);
     txfl->setSpacing(3);
 
     txt_content_ = new QLineEdit(inner);
@@ -840,13 +967,46 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bi_row->addWidget(chk_italic_);
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
-    vl->addWidget(txt_box);
+    btn_text_color_ = new QPushButton(inner);
+    txfl->addRow("Color:", btn_text_color_);
+    vl->addWidget(text_box_);
+
+    /* ── Rectangle ── */
+    rect_box_ = new QGroupBox("Rectangle", inner);
+    rect_box_->setStyleSheet(tform_box->styleSheet());
+    auto *rfl = new QFormLayout(rect_box_);
+    rfl->setSpacing(3);
+    spn_layer_w_ = mk_dspin(1.0, 9999.0, 10.0);
+    spn_layer_h_ = mk_dspin(1.0, 9999.0, 10.0);
+    spn_rect_corner_ = mk_dspin(0.0, 1000.0, 1.0);
+    rfl->addRow("Width:", spn_layer_w_);
+    rfl->addRow("Height:", spn_layer_h_);
+    rfl->addRow("Corner:", spn_rect_corner_);
+    btn_fill_color_ = new QPushButton(inner);
+    rfl->addRow("Color:", btn_fill_color_);
+    vl->addWidget(rect_box_);
+
+    /* ── Image ── */
+    image_box_ = new QGroupBox("Image", inner);
+    image_box_->setStyleSheet(tform_box->styleSheet());
+    auto *ifl = new QFormLayout(image_box_);
+    ifl->setSpacing(3);
+    edit_image_path_ = new QLineEdit(inner);
+    edit_image_path_->setStyleSheet(txt_content_->styleSheet());
+    btn_pick_image_ = new QPushButton("Browse…", inner);
+    btn_pick_image_->setStyleSheet("QPushButton{color:#fff;background:#0078d4;border:none;"
+                                     "border-radius:3px;padding:3px 8px;}");
+    spn_layer_w_->setToolTip("For image layers, this is the displayed width.");
+    spn_layer_h_->setToolTip("For image layers, this is the displayed height.");
+    ifl->addRow("Path:", edit_image_path_);
+    ifl->addRow("", btn_pick_image_);
+    vl->addWidget(image_box_);
 
     vl->addStretch();
     setWidget(inner);
 
     /* ── Connect signals → property_changed ── */
-    auto emit_change = [this]() { emit property_changed(); };
+    auto emit_change = [this]() { if (!loading_values_) emit property_changed(); };
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
@@ -884,6 +1044,61 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, emit_change](bool v){
                 if (layer_) { layer_->font_italic = v; emit_change(); }
             });
+    connect(btn_text_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor initial = color_from_argb(layer_->text_color);
+                QColor picked = QColorDialog::getColor(initial, this, "Text Color",
+                                                        QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->text_color = argb_from_color(picked);
+                style_color_button(btn_text_color_, layer_->text_color);
+                emit_change();
+            });
+    connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->rect_width = (float)v; emit_change(); }
+            });
+    connect(spn_layer_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->rect_height = (float)v; emit_change(); }
+            });
+    connect(spn_rect_corner_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->corner_radius = (float)v; emit_change(); }
+            });
+    connect(btn_fill_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor initial = color_from_argb(layer_->fill_color);
+                QColor picked = QColorDialog::getColor(initial, this, "Fill Color",
+                                                        QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->fill_color = argb_from_color(picked);
+                style_color_button(btn_fill_color_, layer_->fill_color);
+                emit_change();
+            });
+    connect(edit_image_path_, &QLineEdit::textChanged,
+            this, [this, emit_change](const QString &path){
+                if (layer_) { layer_->image_path = path.toStdString(); emit_change(); }
+            });
+    connect(btn_pick_image_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QString path = QFileDialog::getOpenFileName(
+                    this, "Choose Image",
+                    QString::fromStdString(layer_->image_path),
+                    "Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*)");
+                if (path.isEmpty()) return;
+                layer_->image_path = path.toStdString();
+                QImage img(path);
+                if (!img.isNull()) {
+                    layer_->rect_width = (float)img.width();
+                    layer_->rect_height = (float)img.height();
+                }
+                load_values();
+                emit_change();
+            });
 }
 
 void PropertiesPanel::set_title(std::shared_ptr<Title> t)
@@ -900,8 +1115,44 @@ void PropertiesPanel::set_layer(std::shared_ptr<Layer> layer, double t)
 
 void PropertiesPanel::load_values()
 {
-    if (!layer_) return;
-    bool blocked = blockSignals(true);
+    loading_values_ = true;
+    if (!layer_) {
+        text_box_->setVisible(false);
+        rect_box_->setVisible(false);
+        image_box_->setVisible(false);
+        spn_px_->setValue(0.0);
+        spn_py_->setValue(0.0);
+        spn_rot_->setValue(0.0);
+        spn_opacity_->setValue(1.0);
+        txt_content_->clear();
+        edit_image_path_->clear();
+        style_color_button(btn_text_color_, 0xFFFFFFFF);
+        style_color_button(btn_fill_color_, 0xFF222222);
+        spn_layer_w_->setValue(1.0);
+        spn_layer_h_->setValue(1.0);
+        spn_rect_corner_->setValue(0.0);
+        spn_size_->setValue(72);
+        chk_bold_->setChecked(false);
+        chk_italic_->setChecked(false);
+        loading_values_ = false;
+        return;
+    }
+
+    const bool is_text = layer_->type == LayerType::Text;
+    const bool is_rect = layer_->type == LayerType::SolidRect;
+    const bool is_image = layer_->type == LayerType::Image;
+    text_box_->setVisible(is_text);
+    rect_box_->setVisible(is_rect || is_image);
+    rect_box_->setTitle(is_image ? "Image Size" : "Rectangle");
+    spn_rect_corner_->setVisible(is_rect);
+    btn_fill_color_->setVisible(is_rect);
+    if (auto *form = qobject_cast<QFormLayout *>(rect_box_->layout())) {
+        if (auto *label = form->labelForField(spn_rect_corner_))
+            label->setVisible(is_rect);
+        if (auto *label = form->labelForField(btn_fill_color_))
+            label->setVisible(is_rect);
+    }
+    image_box_->setVisible(is_image);
 
     spn_px_->setValue(layer_->pos_x.is_animated()
                       ? layer_->pos_x.evaluate(playhead_)
@@ -916,6 +1167,13 @@ void PropertiesPanel::load_values()
                            ? layer_->opacity.evaluate(playhead_)
                            : layer_->opacity.static_value);
 
+    spn_layer_w_->setValue(layer_->rect_width);
+    spn_layer_h_->setValue(layer_->rect_height);
+    spn_rect_corner_->setValue(layer_->corner_radius);
+    edit_image_path_->setText(QString::fromStdString(layer_->image_path));
+    style_color_button(btn_text_color_, layer_->text_color);
+    style_color_button(btn_fill_color_, layer_->fill_color);
+
     txt_content_->setText(QString::fromStdString(layer_->text_content));
     int fi = cmb_font_->findText(QString::fromStdString(layer_->font_family));
     if (fi >= 0) cmb_font_->setCurrentIndex(fi);
@@ -923,5 +1181,5 @@ void PropertiesPanel::load_values()
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
 
-    blockSignals(blocked);
+    loading_values_ = false;
 }
