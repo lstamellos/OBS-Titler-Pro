@@ -5,6 +5,7 @@ param(
     [string]$BuildDir,
     [string]$VcpkgDir,
     [string]$ObsSdkDir,
+    [string]$InstallRoot,
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
     [switch]$SkipInstall
@@ -26,9 +27,19 @@ if ([string]::IsNullOrWhiteSpace($ObsSdkDir) -and $env:OBS_SDK_DIR) {
 if ([string]::IsNullOrWhiteSpace($ObsSdkDir) -and $env:OBS_STUDIO_DIR) {
     $ObsSdkDir = $env:OBS_STUDIO_DIR
 }
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    if ($env:OBS_PLUGINS_PATH) {
+        $InstallRoot = $env:OBS_PLUGINS_PATH
+    } elseif ($env:ProgramData) {
+        $InstallRoot = Join-Path $env:ProgramData "obs-studio\plugins"
+    } else {
+        $InstallRoot = Join-Path $env:APPDATA "obs-studio\plugins"
+    }
+}
 
+$PluginName = "obs-titles"
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
-$ObsPluginRoot = Join-Path $env:APPDATA "obs-studio\plugins\obs-titles"
+$ObsPluginRoot = Join-Path $InstallRoot $PluginName
 $ObsPluginBin = Join-Path $ObsPluginRoot "bin\64bit"
 $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
@@ -133,10 +144,13 @@ if ($SkipInstall) {
 
 # 6. Copy build DLL and Locale to OBS plugins directory
 Write-Host "`n=== Installing Plugin to OBS ==="
+Write-Host "Install root: $InstallRoot"
 New-Item -ItemType Directory -Force -Path $ObsPluginBin | Out-Null
 New-Item -ItemType Directory -Force -Path $ObsPluginData | Out-Null
 
+$StagedPluginRoot = Join-Path $BuildDir $PluginName
 $BuiltDllCandidates = @(
+    (Join-Path $StagedPluginRoot "bin\64bit\obs-titles.dll"),
     (Join-Path $BuildDir "obs-plugins\Release\obs-titles.dll"),
     (Join-Path $BuildDir "obs-plugins\obs-titles.dll"),
     (Join-Path $BuildDir "obs-plugins\64bit\obs-titles.dll"),
@@ -152,10 +166,16 @@ if (-not $BuiltDll) {
 Copy-Item -Force $BuiltDll $ObsPluginBin
 Write-Host "Copied plugin DLL to: $ObsPluginBin"
 
-$LocaleFile = Join-Path $ScriptDir "data\locale\en-US.ini"
-if (Test-Path $LocaleFile) {
-    Copy-Item -Force $LocaleFile $ObsPluginData
-    Write-Host "Copied en-US.ini to: $ObsPluginData"
+$StagedData = Join-Path $StagedPluginRoot "data"
+if (Test-Path $StagedData) {
+    Copy-Item -Force -Recurse (Join-Path $StagedData "*") (Join-Path $ObsPluginRoot "data")
+    Write-Host "Copied staged plugin data to: $(Join-Path $ObsPluginRoot 'data')"
+} else {
+    $LocaleFile = Join-Path $ScriptDir "data\locale\en-US.ini"
+    if (Test-Path $LocaleFile) {
+        Copy-Item -Force $LocaleFile $ObsPluginData
+        Write-Host "Copied en-US.ini to: $ObsPluginData"
+    }
 }
 
 # 7. Copy vcpkg runtime DLL dependencies

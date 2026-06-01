@@ -5,6 +5,24 @@ project(obs-titles VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ── OBS plugin packaging layout ─────────────────────────────────────
+# OBS' modern manual-install layout is:
+#   <plugins-root>/<plugin-name>/bin/<arch>/<plugin binary>
+#   <plugins-root>/<plugin-name>/data/locale/*.ini
+# Keeping build artifacts in this shape makes the build tree directly copyable
+# into the OBS plugins directory and matches the Windows ProgramData layout.
+set(OBS_TITLES_PLUGIN_NAME "obs-titles")
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(OBS_TITLES_ARCH_DIR "64bit")
+else()
+  set(OBS_TITLES_ARCH_DIR "32bit")
+endif()
+set(OBS_TITLES_PACKAGE_DIR
+    "${CMAKE_BINARY_DIR}/${OBS_TITLES_PLUGIN_NAME}"
+    CACHE PATH "Staging directory for the OBS user-plugin folder layout")
+set(OBS_TITLES_PACKAGE_BIN_DIR
+    "${OBS_TITLES_PACKAGE_DIR}/bin/${OBS_TITLES_ARCH_DIR}")
+
 # ── Qt auto-tools ───────────────────────────────────────────────────
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -282,35 +300,47 @@ endif()
 
 # ── Locale / data files ──────────────────────────────────────────────
 target_compile_definitions(obs-titles PRIVATE
-    PLUGIN_NAME="obs-titles"
+    PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
     PLUGIN_VERSION="${PROJECT_VERSION}"
 )
 
 # ── OBS module helper (sets correct output name & install path) ──────
 # This macro is provided by the OBS cmake helpers:
 #   set_target_obs_bundle(obs-titles)
-# If building standalone:
+# If building standalone, stage artifacts in OBS' user-plugin folder layout.
 set_target_properties(obs-titles PROPERTIES
     PREFIX ""
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/obs-plugins"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/obs-plugins"
+    LIBRARY_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
+foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
+  string(TOUPPER "${config}" config_upper)
+  set_target_properties(obs-titles PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
+      RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
+      ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/lib/${config}")
+endforeach()
+
+add_custom_command(TARGET obs-titles POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${OBS_TITLES_PACKAGE_DIR}/data"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/data/locale"
+            "${OBS_TITLES_PACKAGE_DIR}/data/locale"
+    COMMENT "Staging OBS plugin data files")
 
 # ── Install ──────────────────────────────────────────────────────────
-if(UNIX AND NOT APPLE)
-    install(TARGETS obs-titles
-            LIBRARY DESTINATION lib/obs-plugins)
-elseif(APPLE)
-    install(TARGETS obs-titles
-            LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/obs-plugins)
-elseif(WIN32)
-    install(TARGETS obs-titles
-            DESTINATION obs-plugins/64bit)
-endif()
+# Install into the same user-plugin layout expected below the chosen prefix.
+# Example Windows prefix: C:/ProgramData/obs-studio/plugins
+# Example Linux prefix:   ~/.config/obs-studio/plugins
+install(TARGETS obs-titles
+        RUNTIME DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR}
+        LIBRARY DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
 
 # ── Locale files ────────────────────────────────────────────────────
 install(DIRECTORY data/locale
-        DESTINATION data/obs-plugins/obs-titles)
+        DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────
 message(STATUS "obs-titles: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
