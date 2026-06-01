@@ -26,7 +26,7 @@ obs-titles-plugin/
 | Component | OBS Integration | Purpose |
 |---|---|---|
 | `TitleSource` | `obs_source_type INPUT` | Renders a title to the OBS video mix per-frame via Cairo → `gs_texture` |
-| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with scene-add button |
+| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with blank-title creation, Titler-style templates, and scene-add button |
 | `TitleEditor` | `QDialog` (non-modal) | Full AE-style editor with canvas, layer stack, timeline, properties |
 | `TitleDataStore` | Singleton | Owns all `Title` objects; serialises to `obs-titles/titles.json` |
 
@@ -130,6 +130,18 @@ Use `-InstallRoot` if you need a portable OBS/custom plugin root instead. If
 OBS reports that `obs-titles` failed to load, first verify that the dependency
 DLLs above are beside `obs-titles.dll`; a successful compile is not enough for
 Windows to load the plugin at OBS startup.
+
+---
+
+## Titler Workflow
+
+The dock is designed around a Titler-style flow:
+
+1. Open the **Titles** dock.
+2. Click **Templates** and choose **Lower Third**, **Centered Title**, or **Ticker / Strap**.
+3. Enter the starter text; the editor opens with editable text and shape layers.
+4. Adjust text/position/style in the editor. Changes auto-save and update the title store.
+5. Click **▶ Scene** in the dock to add the selected title source to the active OBS scene.
 
 ---
 
