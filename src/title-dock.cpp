@@ -166,7 +166,9 @@ void TitleDock::on_selection_changed()
                     .arg(t->layers.size())
                     .arg(t->duration, 0, 'f', 1));
     } else {
-        status_lbl_->setText("No title selected");
+        status_lbl_->setText(list_->count() == 0
+            ? "Click + to create a title"
+            : "No title selected");
     }
 }
 
@@ -180,8 +182,17 @@ void TitleDock::on_add()
         this, "New Title", "Title name:", QLineEdit::Normal, "New Title", &ok);
     if (!ok || name.trimmed().isEmpty()) return;
 
-    TitleDataStore::instance().create_title(name.trimmed().toStdString());
-    /* list refreshed via on_change callback */
+    auto title = TitleDataStore::instance().create_title(name.trimmed().toStdString());
+    TitleDataStore::instance().save();
+    populate_list();
+
+    for (int i = 0; i < list_->count(); ++i) {
+        if (list_->item(i)->data(Qt::UserRole).toString().toStdString() == title->id) {
+            list_->setCurrentRow(i);
+            break;
+        }
+    }
+    on_edit();
 }
 
 void TitleDock::on_duplicate()
@@ -199,11 +210,19 @@ void TitleDock::on_duplicate()
     dup->layers.clear();
     for (auto &l : src->layers) {
         auto nl = std::make_shared<Layer>(*l);
-        /* new UUID */
-        nl->id = src->id + "_copy";  /* simplified; use make_uuid in production */
+        nl->id = TitleDataStore::make_uuid();
         dup->layers.push_back(nl);
     }
     TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
+    populate_list();
+
+    for (int i = 0; i < list_->count(); ++i) {
+        if (list_->item(i)->data(Qt::UserRole).toString().toStdString() == dup->id) {
+            list_->setCurrentRow(i);
+            break;
+        }
+    }
 }
 
 void TitleDock::on_delete()
@@ -219,8 +238,10 @@ void TitleDock::on_delete()
         QString("Delete \"%1\"?").arg(QString::fromStdString(t->name)),
         QMessageBox::Yes | QMessageBox::No);
 
-    if (reply == QMessageBox::Yes)
+    if (reply == QMessageBox::Yes) {
         TitleDataStore::instance().delete_title(id);
+        TitleDataStore::instance().save();
+    }
 }
 
 void TitleDock::on_edit()
@@ -234,6 +255,8 @@ void TitleDock::on_edit()
         editor_->setAttribute(Qt::WA_DeleteOnClose);
         connect(editor_, &QObject::destroyed,
                 this, [this]() { editor_ = nullptr; });
+        connect(editor_, &TitleEditor::title_saved,
+                this, [this](const std::string &) { refresh(); });
     }
 
     editor_->open_title(id);
@@ -276,9 +299,17 @@ void TitleDock::on_add_to_scene()
         nullptr);
 
     if (source) {
-        obs_scene_add(scene, source);
+        obs_sceneitem_t *item = obs_scene_add(scene, source);
+        if (item) {
+            struct vec2 pos = {0.0f, 0.0f};
+            obs_sceneitem_set_pos(item, &pos);
+            obs_sceneitem_set_visible(item, true);
+        }
         obs_source_release(source);
         status_lbl_->setText("Added to scene");
+    } else {
+        QMessageBox::warning(this, "Add Title Source",
+                             "OBS could not create the Title source.");
     }
 
     obs_data_release(settings);
