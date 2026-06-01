@@ -31,6 +31,7 @@
 #include <QFontDatabase>
 #include <QScrollArea>
 #include <QFrame>
+#include <QSignalBlocker>
 #include <cmath>
 #include <algorithm>
 
@@ -139,23 +140,47 @@ void TitleEditor::build_ui()
             this, [this](LayerType type) {
                 if (!title_) return;
                 auto l = std::make_shared<Layer>();
-                l->id   = title_->id + "_layer_" + std::to_string(title_->layers.size());
+                l->id   = TitleDataStore::make_uuid();
                 l->name = (type == LayerType::Text) ? "Text" : "Rectangle";
                 l->type = type;
+                l->text_content = (type == LayerType::Text) ? "New Text" : "";
                 l->pos_x.static_value = title_->width  / 2.0;
                 l->pos_y.static_value = title_->height / 2.0;
+                l->rect_width = title_->width * 0.5f;
+                l->rect_height = 160.0f;
                 l->out_time = title_->duration;
                 title_->add_layer(l);
                 layers_->refresh();
+                on_layer_selected(l->id);
                 TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().save();
             });
 
     connect(layers_, &LayerStack::delete_layer_requested,
             this, [this](const std::string &lid) {
                 if (!title_) return;
                 title_->remove_layer(lid);
+                if (sel_layer_id_ == lid) sel_layer_id_.clear();
                 layers_->refresh();
+
+                if (!title_->layers.empty())
+                    on_layer_selected(title_->layers.back()->id);
+                else
+                    props_->set_layer(nullptr, playhead_);
+
                 TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().save();
+            });
+
+    connect(layers_, &LayerStack::layer_visibility_changed,
+            this, [this](const std::string &lid, bool visible) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->visible = visible;
+                    canvas_->update();
+                    TitleDataStore::instance().notify_change();
+                    TitleDataStore::instance().save();
+                }
             });
 
     connect(timeline_, &TimelineWidget::playhead_changed,
@@ -219,6 +244,7 @@ void TitleEditor::build_toolbar()
         "QPushButton:hover { background:#1088e4; }");
     connect(btn_save, &QPushButton::clicked, this, [this]() {
         TitleDataStore::instance().save();
+        if (title_) emit title_saved(title_->id);
         setWindowTitle("Title Editor  ·  saved");
     });
     toolbar_->addWidget(btn_save);
@@ -240,6 +266,11 @@ void TitleEditor::open_title(const std::string &tid)
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
+
+    if (!title_->layers.empty())
+        on_layer_selected(title_->layers.back()->id);
+    else
+        props_->set_layer(nullptr, playhead_);
 
     on_playhead_changed(0.0);
 }
@@ -288,6 +319,7 @@ void TitleEditor::tick()
 void TitleEditor::on_layer_selected(const std::string &lid)
 {
     sel_layer_id_ = lid;
+    layers_->set_selected_layer(lid);
     canvas_->set_selected_layer(lid);
     timeline_->set_selected_layer(lid);
 
@@ -313,8 +345,10 @@ void TitleEditor::on_playhead_changed(double t)
 
 void TitleEditor::on_title_modified()
 {
+    if (title_) setWindowTitle("Title Editor  ·  modified");
     canvas_->update();
     TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -544,6 +578,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     connect(btn_del_,      &QPushButton::clicked, this, &LayerStack::on_delete);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &LayerStack::on_selection_changed);
+    connect(list_, &QListWidget::itemChanged,
+            this, &LayerStack::on_item_changed);
 }
 
 void LayerStack::set_title(std::shared_ptr<Title> t)
@@ -555,6 +591,10 @@ void LayerStack::refresh() { populate(); }
 
 void LayerStack::populate()
 {
+    QString prev_id = list_->currentItem()
+        ? list_->currentItem()->data(Qt::UserRole).toString()
+        : QString();
+
     list_->blockSignals(true);
     list_->clear();
     if (!title_) { list_->blockSignals(false); return; }
@@ -564,10 +604,32 @@ void LayerStack::populate()
             (l->type == LayerType::Text ? "T  " : "▭  ") +
             QString::fromStdString(l->name));
         item->setData(Qt::UserRole, QString::fromStdString(l->id));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         item->setCheckState(l->visible ? Qt::Checked : Qt::Unchecked);
         list_->addItem(item);
+        if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||
+            prev_id == item->data(Qt::UserRole).toString())
+            list_->setCurrentItem(item);
     }
     list_->blockSignals(false);
+    on_selection_changed();
+}
+
+void LayerStack::set_selected_layer(const std::string &layer_id)
+{
+    QString qid = QString::fromStdString(layer_id);
+    if (list_->currentItem() &&
+        list_->currentItem()->data(Qt::UserRole).toString() == qid)
+        return;
+
+    QSignalBlocker blocker(list_);
+    for (int i = 0; i < list_->count(); ++i) {
+        auto *item = list_->item(i);
+        if (item->data(Qt::UserRole).toString() == qid) {
+            list_->setCurrentItem(item);
+            return;
+        }
+    }
 }
 
 std::string LayerStack::selected_id() const
@@ -846,7 +908,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     setWidget(inner);
 
     /* ── Connect signals → property_changed ── */
-    auto emit_change = [this]() { emit property_changed(); };
+    auto emit_change = [this]() { if (!loading_values_) emit property_changed(); };
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, emit_change](double v){
@@ -900,8 +962,19 @@ void PropertiesPanel::set_layer(std::shared_ptr<Layer> layer, double t)
 
 void PropertiesPanel::load_values()
 {
-    if (!layer_) return;
-    bool blocked = blockSignals(true);
+    loading_values_ = true;
+    if (!layer_) {
+        spn_px_->setValue(0.0);
+        spn_py_->setValue(0.0);
+        spn_rot_->setValue(0.0);
+        spn_opacity_->setValue(1.0);
+        txt_content_->clear();
+        spn_size_->setValue(72);
+        chk_bold_->setChecked(false);
+        chk_italic_->setChecked(false);
+        loading_values_ = false;
+        return;
+    }
 
     spn_px_->setValue(layer_->pos_x.is_animated()
                       ? layer_->pos_x.evaluate(playhead_)
@@ -923,5 +996,5 @@ void PropertiesPanel::load_values()
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
 
-    blockSignals(blocked);
+    loading_values_ = false;
 }

@@ -140,6 +140,7 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void refresh();
+    void set_selected_layer(const std::string &layer_id);
 
 signals:
     void layer_selected(const std::string &layer_id);
@@ -231,6 +232,7 @@ private:
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
     double playhead_ = 0.0;
+    bool loading_values_ = false;
 
     /* Text controls */
     QLineEdit       *txt_content_  = nullptr;

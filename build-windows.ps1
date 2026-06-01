@@ -1,16 +1,47 @@
-# build-windows.ps1 - Simplified ASCII build script for obs-titles
+# build-windows.ps1 - Windows build helper for obs-titles.
 # Validates prerequisites, configures CMake, builds, and installs the plugin.
+
+param(
+    [string]$BuildDir,
+    [string]$VcpkgDir,
+    [string]$ObsSdkDir,
+    [string]$InstallRoot,
+    [string]$Generator = "Visual Studio 17 2022",
+    [string]$Architecture = "x64",
+    [switch]$SkipInstall
+)
 
 $ErrorActionPreference = "Stop"
 
 # Paths
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$BuildDir = Join-Path $ScriptDir "build"
-$VcpkgDir = "C:\vcpkg"
+if ([string]::IsNullOrWhiteSpace($BuildDir)) {
+    $BuildDir = Join-Path $ScriptDir "build"
+}
+if ([string]::IsNullOrWhiteSpace($VcpkgDir)) {
+    $VcpkgDir = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "C:\vcpkg" }
+}
+if ([string]::IsNullOrWhiteSpace($ObsSdkDir) -and $env:OBS_SDK_DIR) {
+    $ObsSdkDir = $env:OBS_SDK_DIR
+}
+if ([string]::IsNullOrWhiteSpace($ObsSdkDir) -and $env:OBS_STUDIO_DIR) {
+    $ObsSdkDir = $env:OBS_STUDIO_DIR
+}
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    if ($env:OBS_PLUGINS_PATH) {
+        $InstallRoot = $env:OBS_PLUGINS_PATH
+    } elseif ($env:ProgramData) {
+        $InstallRoot = Join-Path $env:ProgramData "obs-studio\plugins"
+    } else {
+        $InstallRoot = Join-Path $env:APPDATA "obs-studio\plugins"
+    }
+}
+
+$PluginName = "obs-titles"
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
-$ObsPluginRoot = "$env:APPDATA\obs-studio\plugins\obs-titles"
-$ObsPluginBin = "$ObsPluginRoot\bin\64bit"
-$ObsPluginData = "$ObsPluginRoot\data\locale"
+$ObsPluginRoot = Join-Path $InstallRoot $PluginName
+$ObsPluginBin = Join-Path $ObsPluginRoot "bin\64bit"
+$ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
 Write-Host "=== Starting obs-titles build process ==="
 
@@ -22,28 +53,73 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 
 # 2. Verify vcpkg toolchain
 if (-not (Test-Path $VcpkgToolchain)) {
-    Write-Error "vcpkg toolchain not found at $VcpkgToolchain. Please clone/setup vcpkg."
+    Write-Error "vcpkg toolchain not found at $VcpkgToolchain. Pass -VcpkgDir or set VCPKG_ROOT."
     exit 1
 }
 
-# 3. Detect OBS build dependencies
-$ObsBuildDeps = Get-Item "C:\Users\menac\Desktop\obs-build-dependencies\plugin-deps-*" -ErrorAction SilentlyContinue |
-                Sort-Object Name -Descending |
-                Select-Object -First 1
+# 3. Detect OBS SDK/build dependencies without machine-specific paths.
+function Test-ObsSdkDir {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path $Path)) {
+        return $false
+    }
 
-if (-not $ObsBuildDeps) {
-    Write-Error "Could not locate OBS build dependencies under C:\Users\menac\Desktop\obs-build-dependencies."
+    $HasObsLib = (Test-Path (Join-Path $Path "lib\obs.lib")) -or
+                 (Test-Path (Join-Path $Path "lib\obs\obs.lib"))
+    $HasObsFrontendLib = (Test-Path (Join-Path $Path "lib\obs-frontend-api.lib")) -or
+                         (Test-Path (Join-Path $Path "lib\obs\obs-frontend-api.lib"))
+    $HasObsHeader = (Test-Path (Join-Path $Path "include\obs.h")) -or
+                    (Test-Path (Join-Path $Path "include\obs\obs.h"))
+    return ($HasObsLib -and $HasObsFrontendLib -and $HasObsHeader)
+}
+
+if (-not (Test-ObsSdkDir $ObsSdkDir)) {
+    $CandidateRoots = @(
+        (Join-Path $env:USERPROFILE "Desktop\obs-build-dependencies"),
+        (Join-Path $env:USERPROFILE "Downloads\obs-build-dependencies"),
+        (Join-Path $ScriptDir "obs-build-dependencies"),
+        (Join-Path $env:ProgramFiles "obs-studio")
+    )
+
+    if ($env:ProgramW6432) {
+        $CandidateRoots += (Join-Path $env:ProgramW6432 "obs-studio")
+    }
+
+    foreach ($Root in $CandidateRoots) {
+        if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path $Root)) {
+            continue
+        }
+
+        $Candidates = @($Root)
+        $Candidates += @(Get-ChildItem -Path $Root -Directory -Filter "plugin-deps-*" -ErrorAction SilentlyContinue |
+                         Sort-Object Name -Descending |
+                         ForEach-Object { $_.FullName })
+
+        foreach ($Candidate in $Candidates) {
+            if (Test-ObsSdkDir $Candidate) {
+                $ObsSdkDir = $Candidate
+                break
+            }
+        }
+
+        if (Test-ObsSdkDir $ObsSdkDir) {
+            break
+        }
+    }
+}
+
+if (-not (Test-ObsSdkDir $ObsSdkDir)) {
+    Write-Error "Could not locate an OBS SDK/install tree. Pass -ObsSdkDir or set OBS_SDK_DIR/OBS_STUDIO_DIR."
     exit 1
 }
-$ObsSdkDir = $ObsBuildDeps.FullName
 Write-Host "Found OBS SDK: $ObsSdkDir"
 
 # 4. Configure CMake
 Write-Host "`n=== Configuring CMake ==="
 $CmakeArgs = @(
     "-B", $BuildDir,
-    "-G", "Visual Studio 17 2022",
-    "-A", "x64",
+    "-G", $Generator,
+    "-A", $Architecture,
     "-DCMAKE_TOOLCHAIN_FILE=$($VcpkgToolchain.Replace('\', '/'))",
     "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))"
 )
@@ -61,67 +137,101 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+if ($SkipInstall) {
+    Write-Host "`n=== Build complete; skipping OBS install because -SkipInstall was set. ==="
+    exit 0
+}
+
 # 6. Copy build DLL and Locale to OBS plugins directory
 Write-Host "`n=== Installing Plugin to OBS ==="
+Write-Host "Install root: $InstallRoot"
 New-Item -ItemType Directory -Force -Path $ObsPluginBin | Out-Null
 New-Item -ItemType Directory -Force -Path $ObsPluginData | Out-Null
 
-$BuiltDll = Join-Path $BuildDir "obs-plugins\obs-titles.dll"
-if (-not (Test-Path $BuiltDll)) {
-    $BuiltDll = Join-Path $BuildDir "obs-plugins\64bit\obs-titles.dll"
-}
-if (-not (Test-Path $BuiltDll)) {
-    $BuiltDll = Join-Path $BuildDir "Release\obs-titles.dll"
-}
+$StagedPluginRoot = Join-Path $BuildDir $PluginName
+$BuiltDllCandidates = @(
+    (Join-Path $StagedPluginRoot "bin\64bit\obs-titles.dll"),
+    (Join-Path $BuildDir "obs-plugins\Release\obs-titles.dll"),
+    (Join-Path $BuildDir "obs-plugins\obs-titles.dll"),
+    (Join-Path $BuildDir "obs-plugins\64bit\obs-titles.dll"),
+    (Join-Path $BuildDir "Release\obs-titles.dll")
+)
+$BuiltDll = $BuiltDllCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if (-not (Test-Path $BuiltDll)) {
-    Write-Error "Could not find built obs-titles.dll."
+if (-not $BuiltDll) {
+    Write-Error "Could not find built obs-titles.dll. Checked: $($BuiltDllCandidates -join ', ')"
     exit 1
 }
 
 Copy-Item -Force $BuiltDll $ObsPluginBin
 Write-Host "Copied plugin DLL to: $ObsPluginBin"
 
-$LocaleFile = Join-Path $ScriptDir "data\locale\en-US.ini"
-if (Test-Path $LocaleFile) {
-    Copy-Item -Force $LocaleFile $ObsPluginData
-    Write-Host "Copied en-US.ini to: $ObsPluginData"
+$StagedData = Join-Path $StagedPluginRoot "data"
+if (Test-Path $StagedData) {
+    Copy-Item -Force -Recurse (Join-Path $StagedData "*") (Join-Path $ObsPluginRoot "data")
+    Write-Host "Copied staged plugin data to: $(Join-Path $ObsPluginRoot 'data')"
+} else {
+    $LocaleFile = Join-Path $ScriptDir "data\locale\en-US.ini"
+    if (Test-Path $LocaleFile) {
+        Copy-Item -Force $LocaleFile $ObsPluginData
+        Write-Host "Copied en-US.ini to: $ObsPluginData"
+    }
 }
 
-# 7. Copy vcpkg runtime DLL dependencies
-Write-Host "`n=== Copying runtime DLLs from vcpkg ==="
-$VcpkgBin = Join-Path $VcpkgDir "installed\x64-windows\bin"
-$RuntimeDlls = @(
-    "cairo.dll",
-    "pango-1.0.dll",
-    "pangocairo-1.0.dll",
-    "pangoft2-1.0.dll",
-    "glib-2.0.dll",
-    "gobject-2.0.dll",
-    "gmodule-2.0.dll",
-    "gio-2.0.dll",
-    "freetype.dll",
-    "harfbuzz.dll",
-    "libpng16.dll",
-    "zlib1.dll",
-    "pixman-1.dll",
-    "ffi-8.dll",
-    "intl.dll",
-    "iconv-2.dll",
-    "fontconfig.dll",
-    "expat.dll",
-    "brotlidec.dll",
-    "brotlicommon.dll",
-    "bz2.dll"
-)
+# 7. Copy runtime DLL dependencies next to the plugin binary.
+# A plugin can compile and still fail to load in OBS if Qt/Cairo/Pango DLLs are
+# not beside obs-titles.dll, so copy every vcpkg runtime DLL rather than trying
+# to maintain a fragile hand-written dependency list.
+Write-Host "`n=== Copying runtime DLL dependencies ==="
+$RuntimeDllDirs = @()
+$VcpkgTriplets = @($Architecture.ToLower())
+if ($Architecture -eq "x64") {
+    $VcpkgTriplets += "x64-windows"
+} elseif ($Architecture -eq "Win32") {
+    $VcpkgTriplets += "x86-windows"
+}
+
+foreach ($Triplet in ($VcpkgTriplets | Select-Object -Unique)) {
+    $CandidateBin = Join-Path $VcpkgDir "installed\$Triplet\bin"
+    if (Test-Path $CandidateBin) {
+        $RuntimeDllDirs += $CandidateBin
+    }
+}
 
 $CopiedCount = 0
-foreach ($Dll in $RuntimeDlls) {
-    $DllSrc = Join-Path $VcpkgBin $Dll
-    if (Test-Path $DllSrc) {
-        Copy-Item -Force $DllSrc $ObsPluginBin
+foreach ($RuntimeDllDir in ($RuntimeDllDirs | Select-Object -Unique)) {
+    Write-Host "Copying DLLs from: $RuntimeDllDir"
+    $RuntimeDlls = Get-ChildItem -Path $RuntimeDllDir -Filter "*.dll" -File -ErrorAction SilentlyContinue
+    foreach ($Dll in $RuntimeDlls) {
+        Copy-Item -Force $Dll.FullName $ObsPluginBin
         $CopiedCount++
     }
 }
-Write-Host "Copied $CopiedCount runtime DLL dependencies from vcpkg."
+
+if ($CopiedCount -eq 0) {
+    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says obs-titles failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
+} else {
+    Write-Host "Copied $CopiedCount runtime DLL dependencies."
+}
+
+$ExpectedDlls = @(
+    "obs-titles.dll",
+    "cairo.dll",
+    "pango-1.0.dll",
+    "pangocairo-1.0.dll"
+)
+$MissingExpectedDlls = @()
+foreach ($Dll in $ExpectedDlls) {
+    if (-not (Test-Path (Join-Path $ObsPluginBin $Dll))) {
+        $MissingExpectedDlls += $Dll
+    }
+}
+if ($MissingExpectedDlls.Count -gt 0) {
+    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that obs-titles failed to load."
+}
+
+Write-Host "`nInstalled OBS plugin layout:"
+Write-Host "  $ObsPluginRoot"
+Write-Host "  $ObsPluginBin\obs-titles.dll"
+Write-Host "  $ObsPluginData\en-US.ini"
 Write-Host "`n=== obs-titles built and installed successfully! ==="
