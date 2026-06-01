@@ -70,6 +70,8 @@ public slots:
     void play_pause();
     void rewind();
     void step_forward();
+    void previous_keyframe();
+    void next_keyframe();
 
     /* Called by sub-widgets */
     void on_layer_selected(const std::string &layer_id);
@@ -107,6 +109,8 @@ private:
     QToolBar        *toolbar_   = nullptr;
     QAction         *act_play_  = nullptr;
     QAction         *act_rew_   = nullptr;
+    QAction         *act_prev_kf_ = nullptr;
+    QAction         *act_next_kf_ = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -313,6 +317,7 @@ private:
     QDoubleSpinBox  *spn_layer_h_   = nullptr;
     QDoubleSpinBox  *spn_rect_corner_   = nullptr;
     QPushButton     *btn_fill_color_ = nullptr;
+    QWidget         *row_fill_color_ = nullptr;
 
     /* Image controls */
     QLineEdit       *edit_image_path_ = nullptr;
@@ -326,10 +331,14 @@ private:
     QDoubleSpinBox  *spn_origin_x_ = nullptr;
     QDoubleSpinBox  *spn_origin_y_ = nullptr;
     QCheckBox       *chk_lock_aspect_ = nullptr;
-    QPushButton     *btn_kf_position_ = nullptr;
-    QPushButton     *btn_kf_origin_ = nullptr;
+    QPushButton     *btn_kf_pos_x_ = nullptr;
+    QPushButton     *btn_kf_pos_y_ = nullptr;
+    QPushButton     *btn_kf_rotation_ = nullptr;
     QPushButton     *btn_kf_opacity_ = nullptr;
-    QPushButton     *btn_kf_size_ = nullptr;
+    QPushButton     *btn_kf_origin_x_ = nullptr;
+    QPushButton     *btn_kf_origin_y_ = nullptr;
+    QPushButton     *btn_kf_width_ = nullptr;
+    QPushButton     *btn_kf_height_ = nullptr;
     QPushButton     *btn_kf_text_color_ = nullptr;
     QPushButton     *btn_kf_fill_color_ = nullptr;
 };

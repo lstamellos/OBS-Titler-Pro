@@ -41,6 +41,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <initializer_list>
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Dark AE-style palette constants                                   */
@@ -156,6 +157,39 @@ static void add_or_replace_keyframe(AnimatedProperty &prop, double time, double 
               [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
 }
 
+
+static bool keyframe_at_time(const AnimatedProperty &prop, double time)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    for (const auto &kf : prop.keyframes)
+        if (std::abs(kf.time - time) <= kEpsilon) return true;
+    return false;
+}
+
+static void remove_keyframe_at(AnimatedProperty &prop, double time)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    prop.keyframes.erase(
+        std::remove_if(prop.keyframes.begin(), prop.keyframes.end(),
+                       [&](const Keyframe &kf) { return std::abs(kf.time - time) <= kEpsilon; }),
+        prop.keyframes.end());
+}
+
+static void toggle_keyframe(AnimatedProperty &prop, double time, double value)
+{
+    if (keyframe_at_time(prop, time))
+        remove_keyframe_at(prop, time);
+    else
+        add_or_replace_keyframe(prop, time, value);
+}
+
+static bool any_keyframe_at_time(std::initializer_list<const AnimatedProperty *> props, double time)
+{
+    for (const auto *prop : props)
+        if (prop && keyframe_at_time(*prop, time)) return true;
+    return false;
+}
+
 static void style_color_button(QPushButton *button, uint32_t argb)
 {
     QColor c = color_from_argb(argb);
@@ -240,10 +274,30 @@ void TitleEditor::build_ui()
     /* ── Lower split: LayerStack | Timeline ── */
     auto *lower_split = new QSplitter(Qt::Horizontal, this);
 
-    layers_ = new LayerStack(lower_split);
-    layers_->setFixedWidth(220);
+    auto *layers_panel = new QWidget(lower_split);
+    auto *layers_layout = new QVBoxLayout(layers_panel);
+    layers_layout->setContentsMargins(0, 0, 0, 0);
+    layers_layout->setSpacing(0);
+
+    auto *layer_transport = new QToolBar(layers_panel);
+    layer_transport->setMovable(false);
+    layer_transport->setIconSize(QSize(14, 14));
+    layer_transport->setStyleSheet(
+        "QToolBar{background:#141414;border-bottom:1px solid #333;spacing:1px;}"
+        "QToolButton{color:#ccc;background:transparent;padding:3px 5px;border:none;}"
+        "QToolButton:hover{background:#333;border-radius:2px;}");
+    layer_transport->addAction(act_rew_);
+    layer_transport->addAction(act_prev_kf_);
+    layer_transport->addAction(act_play_);
+    layer_transport->addAction("▶|", this, &TitleEditor::step_forward);
+    layer_transport->addAction(act_next_kf_);
+    layers_layout->addWidget(layer_transport);
+
+    layers_ = new LayerStack(layers_panel);
     layers_->setMinimumHeight(140);
-    lower_split->addWidget(layers_);
+    layers_layout->addWidget(layers_, 1);
+    layers_panel->setFixedWidth(220);
+    lower_split->addWidget(layers_panel);
 
     timeline_ = new TimelineWidget(lower_split);
     timeline_->setMinimumHeight(140);
@@ -378,15 +432,15 @@ void TitleEditor::build_toolbar()
         "QToolButton:hover { background:#333; border-radius:3px; }"
         "QToolButton:pressed { background:#0078d4; }");
 
-    act_rew_  = toolbar_->addAction("⏮ Rewind");
-    act_play_ = toolbar_->addAction("▶ Play");
-    toolbar_->addAction("▶| Step")->connect(toolbar_->actions().last(),
-        &QAction::triggered, this, &TitleEditor::step_forward);
+    act_rew_ = new QAction("⏮", this);
+    act_prev_kf_ = new QAction("◆◀", this);
+    act_play_ = new QAction("▶", this);
+    act_next_kf_ = new QAction("▶◆", this);
 
-    connect(act_rew_,  &QAction::triggered, this, &TitleEditor::rewind);
+    connect(act_rew_, &QAction::triggered, this, &TitleEditor::rewind);
+    connect(act_prev_kf_, &QAction::triggered, this, &TitleEditor::previous_keyframe);
     connect(act_play_, &QAction::triggered, this, &TitleEditor::play_pause);
-
-    toolbar_->addSeparator();
+    connect(act_next_kf_, &QAction::triggered, this, &TitleEditor::next_keyframe);
 
     time_lbl_ = new QLabel("0.000 s", toolbar_);
     time_lbl_->setStyleSheet("color:#0af; font-family:monospace; min-width:70px;");
@@ -429,7 +483,7 @@ void TitleEditor::open_title(const std::string &tid)
 {
     play_timer_->stop();
     playing_ = false;
-    act_play_->setText("▶ Play");
+    act_play_->setText("▶");
     playhead_ = 0.0;
 
     title_ = TitleDataStore::instance().get_title(tid);
@@ -441,11 +495,6 @@ void TitleEditor::open_title(const std::string &tid)
     timeline_->set_title(title_);
     props_->set_title(title_);
     title_props_->set_title(title_);
-
-    if (!title_->layers.empty())
-        on_layer_selected(title_->layers.back()->id);
-    else
-        props_->set_layer(nullptr, playhead_);
 
     if (!title_->layers.empty())
         on_layer_selected(title_->layers.back()->id);
@@ -467,11 +516,11 @@ void TitleEditor::play_pause()
     if (!title_) return;
     playing_ = !playing_;
     if (playing_) {
-        act_play_->setText("⏸ Pause");
+        act_play_->setText("⏸");
         playback_clock_.restart();
         play_timer_->start();
     } else {
-        act_play_->setText("▶ Play");
+        act_play_->setText("▶");
         play_timer_->stop();
     }
 }
@@ -485,6 +534,63 @@ void TitleEditor::step_forward()
 {
     if (!title_) return;
     on_playhead_changed(std::min(playhead_ + 1.0/30.0, title_->duration));
+}
+
+
+static void collect_layer_keyframes(const std::shared_ptr<Layer> &layer,
+                                    std::vector<double> &times)
+{
+    if (!layer) return;
+    auto collect = [&](const AnimatedProperty &prop) {
+        for (const auto &kf : prop.keyframes)
+            times.push_back(layer->in_time + kf.time);
+    };
+
+    collect(layer->pos_x); collect(layer->pos_y);
+    collect(layer->scale_x); collect(layer->scale_y);
+    collect(layer->rotation); collect(layer->opacity);
+    collect(layer->box_width); collect(layer->box_height);
+    collect(layer->origin_x_prop); collect(layer->origin_y_prop);
+    collect(layer->text_color_a); collect(layer->text_color_r);
+    collect(layer->text_color_g); collect(layer->text_color_b);
+    collect(layer->fill_color_a); collect(layer->fill_color_r);
+    collect(layer->fill_color_g); collect(layer->fill_color_b);
+}
+
+void TitleEditor::previous_keyframe()
+{
+    if (!title_) return;
+    std::vector<double> times;
+    if (!sel_layer_id_.empty())
+        collect_layer_keyframes(title_->find_layer(sel_layer_id_), times);
+    if (times.empty())
+        for (const auto &layer : title_->layers) collect_layer_keyframes(layer, times);
+
+    constexpr double kEpsilon = 1.0 / 240.0;
+    double target = -1.0;
+    for (double t : times) {
+        if (t < playhead_ - kEpsilon)
+            target = std::max(target, t);
+    }
+    if (target >= 0.0) on_playhead_changed(target);
+}
+
+void TitleEditor::next_keyframe()
+{
+    if (!title_) return;
+    std::vector<double> times;
+    if (!sel_layer_id_.empty())
+        collect_layer_keyframes(title_->find_layer(sel_layer_id_), times);
+    if (times.empty())
+        for (const auto &layer : title_->layers) collect_layer_keyframes(layer, times);
+
+    constexpr double kEpsilon = 1.0 / 240.0;
+    double target = title_->duration + 1.0;
+    for (double t : times) {
+        if (t > playhead_ + kEpsilon)
+            target = std::min(target, t);
+    }
+    if (target <= title_->duration) on_playhead_changed(target);
 }
 
 void TitleEditor::tick()
@@ -1347,6 +1453,26 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return s;
     };
 
+    auto mk_kf_button = [&](const QString &tip) {
+        auto *b = new QPushButton("◇", inner);
+        b->setFixedWidth(24);
+        b->setToolTip(tip);
+        b->setStyleSheet("QPushButton{color:#f0a020;background:#2a2a2a;border:none;"
+                         "border-radius:3px;padding:2px;font-weight:bold;}"
+                         "QPushButton:hover{background:#3a3a3a;color:#ffd27a;}");
+        return b;
+    };
+
+    auto with_kf = [&](QWidget *field, QPushButton *button) {
+        auto *row = new QWidget(inner);
+        auto *hl = new QHBoxLayout(row);
+        hl->setContentsMargins(0, 0, 0, 0);
+        hl->setSpacing(3);
+        hl->addWidget(field, 1);
+        hl->addWidget(button);
+        return row;
+    };
+
     spn_px_      = mk_dspin(-9999, 9999, 1.0);
     spn_py_      = mk_dspin(-9999, 9999, 1.0);
     spn_rot_     = mk_dspin(-360,  360,  0.5);
@@ -1358,22 +1484,18 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_origin_x_->setToolTip("Horizontal origin: 0=left, 0.5=center, 1=right.");
     spn_origin_y_->setToolTip("Vertical origin: 0=top, 0.5=center, 1=bottom.");
 
-    tfl->addRow("X:",       spn_px_);
-    tfl->addRow("Y:",       spn_py_);
-    tfl->addRow("Rotation:",spn_rot_);
-    tfl->addRow("Opacity:", spn_opacity_);
-    tfl->addRow("Origin X:", spn_origin_x_);
-    tfl->addRow("Origin Y:", spn_origin_y_);
-    auto *tf_kf_row = new QHBoxLayout();
-    btn_kf_position_ = new QPushButton("◆ Pos", inner);
-    btn_kf_origin_ = new QPushButton("◆ Origin", inner);
-    btn_kf_opacity_ = new QPushButton("◆ Opacity", inner);
-    for (auto *b : {btn_kf_position_, btn_kf_origin_, btn_kf_opacity_}) {
-        b->setStyleSheet("QPushButton{color:#fff;background:#2a2a2a;border:none;border-radius:3px;padding:3px;}"
-                         "QPushButton:hover{background:#0078d4;}");
-        tf_kf_row->addWidget(b);
-    }
-    tfl->addRow("Keyframes:", tf_kf_row);
+    btn_kf_pos_x_ = mk_kf_button("Toggle X position keyframe");
+    btn_kf_pos_y_ = mk_kf_button("Toggle Y position keyframe");
+    btn_kf_rotation_ = mk_kf_button("Toggle rotation keyframe");
+    btn_kf_opacity_ = mk_kf_button("Toggle opacity keyframe");
+    btn_kf_origin_x_ = mk_kf_button("Toggle origin X keyframe");
+    btn_kf_origin_y_ = mk_kf_button("Toggle origin Y keyframe");
+    tfl->addRow("X:",       with_kf(spn_px_, btn_kf_pos_x_));
+    tfl->addRow("Y:",       with_kf(spn_py_, btn_kf_pos_y_));
+    tfl->addRow("Rotation:",with_kf(spn_rot_, btn_kf_rotation_));
+    tfl->addRow("Opacity:", with_kf(spn_opacity_, btn_kf_opacity_));
+    tfl->addRow("Origin X:", with_kf(spn_origin_x_, btn_kf_origin_x_));
+    tfl->addRow("Origin Y:", with_kf(spn_origin_y_, btn_kf_origin_y_));
     vl->addWidget(tform_box);
 
     /* ── Text ── */
@@ -1413,11 +1535,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
     btn_text_color_ = new QPushButton(inner);
-    txfl->addRow("Color:", btn_text_color_);
-    btn_kf_text_color_ = new QPushButton("◆ Text Color", inner);
-    btn_kf_text_color_->setStyleSheet("QPushButton{color:#fff;background:#2a2a2a;border:none;border-radius:3px;padding:3px;}"
-                                      "QPushButton:hover{background:#0078d4;}");
-    txfl->addRow("Keyframe:", btn_kf_text_color_);
+    btn_kf_text_color_ = mk_kf_button("Toggle text color keyframe");
+    txfl->addRow("Color:", with_kf(btn_text_color_, btn_kf_text_color_));
     vl->addWidget(text_box_);
 
     /* ── Rectangle ── */
@@ -1428,18 +1547,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_layer_w_ = mk_dspin(1.0, 9999.0, 10.0);
     spn_layer_h_ = mk_dspin(1.0, 9999.0, 10.0);
     spn_rect_corner_ = mk_dspin(0.0, 1000.0, 1.0);
-    rfl->addRow("Width:", spn_layer_w_);
-    rfl->addRow("Height:", spn_layer_h_);
-    btn_kf_size_ = new QPushButton("◆ Size", inner);
-    btn_kf_size_->setStyleSheet("QPushButton{color:#fff;background:#2a2a2a;border:none;border-radius:3px;padding:3px;}"
-                                "QPushButton:hover{background:#0078d4;}");
-    rfl->addRow("Keyframe:", btn_kf_size_);
+    btn_kf_width_ = mk_kf_button("Toggle width keyframe");
+    btn_kf_height_ = mk_kf_button("Toggle height keyframe");
+    rfl->addRow("Width:", with_kf(spn_layer_w_, btn_kf_width_));
+    rfl->addRow("Height:", with_kf(spn_layer_h_, btn_kf_height_));
     rfl->addRow("Corner:", spn_rect_corner_);
     btn_fill_color_ = new QPushButton(inner);
-    rfl->addRow("Color:", btn_fill_color_);
-    btn_kf_fill_color_ = new QPushButton("◆ Fill Color", inner);
-    btn_kf_fill_color_->setStyleSheet(btn_kf_size_->styleSheet());
-    rfl->addRow("Color KF:", btn_kf_fill_color_);
+    btn_kf_fill_color_ = mk_kf_button("Toggle fill color keyframe");
+    row_fill_color_ = with_kf(btn_fill_color_, btn_kf_fill_color_);
+    rfl->addRow("Color:", row_fill_color_);
     vl->addWidget(rect_box_);
 
     /* ── Image ── */
@@ -1601,50 +1717,90 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
                                    std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
     };
-    connect(btn_kf_position_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+    connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
-        double t = local_time();
-        add_or_replace_keyframe(layer_->pos_x, t, spn_px_->value());
-        add_or_replace_keyframe(layer_->pos_y, t, spn_py_->value());
+        toggle_keyframe(layer_->pos_x, local_time(), spn_px_->value());
+        load_values();
         emit_change();
     });
-    connect(btn_kf_origin_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+    connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
-        double t = local_time();
-        add_or_replace_keyframe(layer_->origin_x_prop, t, spn_origin_x_->value());
-        add_or_replace_keyframe(layer_->origin_y_prop, t, spn_origin_y_->value());
+        toggle_keyframe(layer_->pos_y, local_time(), spn_py_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_rotation_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        toggle_keyframe(layer_->rotation, local_time(), spn_rot_->value());
+        load_values();
         emit_change();
     });
     connect(btn_kf_opacity_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
-        add_or_replace_keyframe(layer_->opacity, local_time(), spn_opacity_->value());
+        toggle_keyframe(layer_->opacity, local_time(), spn_opacity_->value());
+        load_values();
         emit_change();
     });
-    connect(btn_kf_size_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+    connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
-        double t = local_time();
-        add_or_replace_keyframe(layer_->box_width, t, spn_layer_w_->value());
-        add_or_replace_keyframe(layer_->box_height, t, spn_layer_h_->value());
+        toggle_keyframe(layer_->origin_x_prop, local_time(), spn_origin_x_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        toggle_keyframe(layer_->origin_y_prop, local_time(), spn_origin_y_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_width_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        toggle_keyframe(layer_->box_width, local_time(), spn_layer_w_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_height_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
+        if (!layer_) return;
+        toggle_keyframe(layer_->box_height, local_time(), spn_layer_h_->value());
+        load_values();
         emit_change();
     });
     connect(btn_kf_text_color_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
         double t = local_time();
         uint32_t color = eval_text_color(*layer_, t);
-        add_or_replace_keyframe(layer_->text_color_a, t, (color >> 24) & 0xFF);
-        add_or_replace_keyframe(layer_->text_color_r, t, (color >> 16) & 0xFF);
-        add_or_replace_keyframe(layer_->text_color_g, t, (color >> 8) & 0xFF);
-        add_or_replace_keyframe(layer_->text_color_b, t, color & 0xFF);
+        if (any_keyframe_at_time({&layer_->text_color_a, &layer_->text_color_r,
+                                  &layer_->text_color_g, &layer_->text_color_b}, t)) {
+            remove_keyframe_at(layer_->text_color_a, t);
+            remove_keyframe_at(layer_->text_color_r, t);
+            remove_keyframe_at(layer_->text_color_g, t);
+            remove_keyframe_at(layer_->text_color_b, t);
+        } else {
+            add_or_replace_keyframe(layer_->text_color_a, t, (color >> 24) & 0xFF);
+            add_or_replace_keyframe(layer_->text_color_r, t, (color >> 16) & 0xFF);
+            add_or_replace_keyframe(layer_->text_color_g, t, (color >> 8) & 0xFF);
+            add_or_replace_keyframe(layer_->text_color_b, t, color & 0xFF);
+        }
+        load_values();
         emit_change();
     });
     connect(btn_kf_fill_color_, &QPushButton::clicked, this, [this, local_time, emit_change]() {
         if (!layer_) return;
         double t = local_time();
         uint32_t color = eval_fill_color(*layer_, t);
-        add_or_replace_keyframe(layer_->fill_color_a, t, (color >> 24) & 0xFF);
-        add_or_replace_keyframe(layer_->fill_color_r, t, (color >> 16) & 0xFF);
-        add_or_replace_keyframe(layer_->fill_color_g, t, (color >> 8) & 0xFF);
-        add_or_replace_keyframe(layer_->fill_color_b, t, color & 0xFF);
+        if (any_keyframe_at_time({&layer_->fill_color_a, &layer_->fill_color_r,
+                                  &layer_->fill_color_g, &layer_->fill_color_b}, t)) {
+            remove_keyframe_at(layer_->fill_color_a, t);
+            remove_keyframe_at(layer_->fill_color_r, t);
+            remove_keyframe_at(layer_->fill_color_g, t);
+            remove_keyframe_at(layer_->fill_color_b, t);
+        } else {
+            add_or_replace_keyframe(layer_->fill_color_a, t, (color >> 24) & 0xFF);
+            add_or_replace_keyframe(layer_->fill_color_r, t, (color >> 16) & 0xFF);
+            add_or_replace_keyframe(layer_->fill_color_g, t, (color >> 8) & 0xFF);
+            add_or_replace_keyframe(layer_->fill_color_b, t, color & 0xFF);
+        }
+        load_values();
         emit_change();
     });
 }
@@ -1685,6 +1841,10 @@ void PropertiesPanel::load_values()
         spn_size_->setValue(72);
         chk_bold_->setChecked(false);
         chk_italic_->setChecked(false);
+        for (auto *b : {btn_kf_pos_x_, btn_kf_pos_y_, btn_kf_rotation_, btn_kf_opacity_,
+                        btn_kf_origin_x_, btn_kf_origin_y_, btn_kf_width_, btn_kf_height_,
+                        btn_kf_text_color_, btn_kf_fill_color_})
+            if (b) b->setText("◇");
         loading_values_ = false;
         return;
     }
@@ -1699,12 +1859,11 @@ void PropertiesPanel::load_values()
     btn_fill_color_->setVisible(is_rect);
     btn_kf_text_color_->setVisible(is_text);
     btn_kf_fill_color_->setVisible(is_rect);
+    if (row_fill_color_) row_fill_color_->setVisible(is_rect);
     if (auto *form = qobject_cast<QFormLayout *>(rect_box_->layout())) {
         if (auto *label = form->labelForField(spn_rect_corner_))
             label->setVisible(is_rect);
-        if (auto *label = form->labelForField(btn_fill_color_))
-            label->setVisible(is_rect);
-        if (auto *label = form->labelForField(btn_kf_fill_color_))
+        if (auto *label = form->labelForField(row_fill_color_))
             label->setVisible(is_rect);
     }
     image_box_->setVisible(is_image);
@@ -1733,6 +1892,24 @@ void PropertiesPanel::load_values()
     chk_lock_aspect_->setChecked(layer_->lock_aspect_ratio);
     style_color_button(btn_text_color_, eval_text_color(*layer_, lt));
     style_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
+
+    auto set_kf_icon = [](QPushButton *button, bool active) {
+        if (!button) return;
+        button->setText(active ? "◆" : "◇");
+        button->setProperty("active", active);
+    };
+    set_kf_icon(btn_kf_pos_x_, keyframe_at_time(layer_->pos_x, lt));
+    set_kf_icon(btn_kf_pos_y_, keyframe_at_time(layer_->pos_y, lt));
+    set_kf_icon(btn_kf_rotation_, keyframe_at_time(layer_->rotation, lt));
+    set_kf_icon(btn_kf_opacity_, keyframe_at_time(layer_->opacity, lt));
+    set_kf_icon(btn_kf_origin_x_, keyframe_at_time(layer_->origin_x_prop, lt));
+    set_kf_icon(btn_kf_origin_y_, keyframe_at_time(layer_->origin_y_prop, lt));
+    set_kf_icon(btn_kf_width_, keyframe_at_time(layer_->box_width, lt));
+    set_kf_icon(btn_kf_height_, keyframe_at_time(layer_->box_height, lt));
+    set_kf_icon(btn_kf_text_color_, any_keyframe_at_time({&layer_->text_color_a, &layer_->text_color_r,
+                                                          &layer_->text_color_g, &layer_->text_color_b}, lt));
+    set_kf_icon(btn_kf_fill_color_, any_keyframe_at_time({&layer_->fill_color_a, &layer_->fill_color_r,
+                                                          &layer_->fill_color_g, &layer_->fill_color_b}, lt));
 
     txt_content_->setText(QString::fromStdString(layer_->text_content));
     int fi = cmb_font_->findText(QString::fromStdString(layer_->font_family));
