@@ -74,6 +74,19 @@ function Assert-UniqueSourceDefinition {
 
 $TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
 Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
+    "void TitleEditor::keyPressEvent(",
+    "void CanvasPreview::set_safe_guides_visible(",
+    "void CanvasPreview::refresh_preview(",
+    "std::shared_ptr<Layer> CanvasPreview::selected_layer(",
+    "QRectF CanvasPreview::layer_local_rect(",
+    "double CanvasPreview::view_scale(",
+    "QPointF CanvasPreview::view_origin(",
+    "QPointF CanvasPreview::view_to_canvas(",
+    "QPointF CanvasPreview::canvas_to_view(",
+    "QPointF CanvasPreview::canvas_to_layer(",
+    "QPointF CanvasPreview::layer_to_canvas(",
+    "CanvasPreview::DragMode CanvasPreview::hit_test_selected(",
+    "void CanvasPreview::apply_drag(",
     "void TimelineWidget::contextMenuEvent(",
     "void TimelineWidget::wheelEvent(",
     "TitlePropertiesPanel::TitlePropertiesPanel(",
