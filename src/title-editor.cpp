@@ -703,6 +703,52 @@ void TitleEditor::build_ui()
                 on_title_modified();
             });
 
+    auto paste_layer_copy = [this](const Layer &source, bool offset) -> std::shared_ptr<Layer> {
+        auto layer = std::make_shared<Layer>(source);
+        layer->id = TitleDataStore::make_uuid();
+        layer->name = source.name.empty() ? "Layer copy" : source.name + " copy";
+        layer->parent_id.clear();
+        if (offset) {
+            layer->pos_x.static_value += 20.0;
+            layer->pos_y.static_value += 20.0;
+            for (auto &kf : layer->pos_x.keyframes) kf.value += 20.0;
+            for (auto &kf : layer->pos_y.keyframes) kf.value += 20.0;
+        }
+        return layer;
+    };
+
+    connect(layers_, &LayerStack::clone_layer_requested,
+            this, [this, paste_layer_copy](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                auto clone = paste_layer_copy(*source, true);
+                title_->add_layer(clone);
+                layers_->refresh();
+                on_layer_selected(clone->id);
+                on_title_modified();
+            });
+
+    connect(layers_, &LayerStack::copy_layer_requested,
+            this, [this](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                copied_layer_ = std::make_shared<Layer>(*source);
+                layers_->set_layer_clipboard_available(true);
+            });
+
+    connect(layers_, &LayerStack::paste_layer_requested,
+            this, [this, paste_layer_copy]() {
+                if (!title_ || !copied_layer_) return;
+                auto pasted = paste_layer_copy(*copied_layer_, true);
+                title_->add_layer(pasted);
+                layers_->refresh();
+                layers_->set_layer_clipboard_available(true);
+                on_layer_selected(pasted->id);
+                on_title_modified();
+            });
+
     connect(layers_, &LayerStack::delete_layer_requested,
             this, [this](const std::string &lid) {
                 if (!title_) return;
@@ -1531,6 +1577,129 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
 
 void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
+    sel_layer_id_ = lid; update();
+}
+
+void CanvasPreview::set_safe_guides_visible(bool visible)
+{
+    safe_guides_visible_ = visible;
+    update();
+}
+
+void CanvasPreview::refresh_preview()
+{
+    dirty_ = true;
+    update();
+}
+
+std::shared_ptr<Layer> CanvasPreview::selected_layer() const
+{
+    return title_ ? title_->find_layer(sel_layer_id_) : nullptr;
+}
+
+QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
+{
+    double lt = playhead_ - layer.in_time;
+    double w = eval_box_width(layer, lt);
+    double h = eval_box_height(layer, lt);
+    double ox = eval_origin_x(layer, lt);
+    double oy = eval_origin_y(layer, lt);
+    return QRectF(-ox * w, -oy * h, w, h);
+}
+
+double CanvasPreview::view_scale() const
+{
+    if (!title_) return 1.0;
+    return std::min((double)width() / title_->width,
+                    (double)height() / title_->height) * zoom_;
+}
+
+QPointF CanvasPreview::view_origin() const
+{
+    if (!title_) return QPointF(0, 0);
+    double scale = view_scale();
+    return QPointF((width() - title_->width * scale) / 2.0,
+                   (height() - title_->height * scale) / 2.0);
+}
+
+QPointF CanvasPreview::view_to_canvas(const QPointF &view_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF((view_pt.x() - origin.x()) / scale,
+                   (view_pt.y() - origin.y()) / scale);
+}
+
+QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF(origin.x() + canvas_pt.x() * scale,
+                   origin.y() + canvas_pt.y() * scale);
+}
+
+QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = -layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double dx = canvas_pt.x() - px;
+    double dy = canvas_pt.y() - py;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    double sx = std::max(0.0001, layer.scale_x.evaluate(lt));
+    double sy = std::max(0.0001, layer.scale_y.evaluate(lt));
+    return QPointF((dx * c - dy * ss) / sx,
+                   (dx * ss + dy * c) / sy);
+}
+
+QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double sx = layer.scale_x.evaluate(lt);
+    double sy = layer.scale_y.evaluate(lt);
+    double x = layer_pt.x() * sx;
+    double y = layer_pt.y() * sy;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    return QPointF(px + x * c - y * ss,
+                   py + x * ss + y * c);
+}
+
+CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt) const
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked) return DragMode::None;
+
+    double scale = view_scale();
+    double handle = 8.0 / std::max(0.1, scale);
+    QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    QRectF r = layer_local_rect(*layer);
+
+    auto near_pt = [&](const QPointF &p) {
+        return std::abs(local.x() - p.x()) <= handle &&
+               std::abs(local.y() - p.y()) <= handle;
+    };
+
+    if (near_pt(r.topLeft())) return DragMode::ResizeNW;
+    if (near_pt(QPointF(r.center().x(), r.top()))) return DragMode::ResizeN;
+    if (near_pt(r.topRight())) return DragMode::ResizeNE;
+    if (near_pt(QPointF(r.right(), r.center().y()))) return DragMode::ResizeE;
+    if (near_pt(r.bottomRight())) return DragMode::ResizeSE;
+    if (near_pt(QPointF(r.center().x(), r.bottom()))) return DragMode::ResizeS;
+    if (near_pt(r.bottomLeft())) return DragMode::ResizeSW;
+    if (near_pt(QPointF(r.left(), r.center().y()))) return DragMode::ResizeW;
+    if (std::hypot(local.x(), local.y()) <= handle * 1.25) return DragMode::Origin;
+    if (r.adjusted(-handle, -handle, handle, handle).contains(local)) return DragMode::Move;
+    return DragMode::None;
+}
+
+void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
     auto layer = selected_layer();
     if (!layer || drag_mode_ == DragMode::None) return;
 
@@ -1952,12 +2121,15 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
         "QListWidget::item{border-bottom:1px solid #2a2a2a;}"
         "QListWidget::item:selected{background:#3b4f64;}"
         "QListWidget::item:hover{background:#252525;}");
+    list_->setContextMenuPolicy(Qt::CustomContextMenu);
     vl->addWidget(list_, 1);
 
     connect(btn_add_text_, &QPushButton::clicked, this, &LayerStack::on_add_text);
     connect(btn_add_rect_,  &QPushButton::clicked, this, &LayerStack::on_add_rect);
     connect(btn_add_image_, &QPushButton::clicked, this, &LayerStack::on_add_image);
     connect(btn_del_,       &QPushButton::clicked, this, &LayerStack::on_delete);
+    connect(list_, &QListWidget::customContextMenuRequested,
+            this, &LayerStack::show_context_menu);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &LayerStack::on_selection_changed);
     connect(list_->model(), &QAbstractItemModel::rowsMoved,
@@ -2154,6 +2326,42 @@ void LayerStack::populate()
     }
     list_->blockSignals(false);
     on_selection_changed();
+}
+
+void LayerStack::set_layer_clipboard_available(bool available)
+{
+    can_paste_layer_ = available;
+}
+
+void LayerStack::show_context_menu(const QPoint &pos)
+{
+    if (!list_) return;
+    QListWidgetItem *item = list_->itemAt(pos);
+    if (item && item->data(Qt::UserRole + 1).toString() == "layer")
+        list_->setCurrentItem(item);
+
+    const std::string id = selected_id();
+    const bool has_layer = !id.empty() && title_ && title_->find_layer(id) != nullptr;
+
+    QMenu menu(this);
+    QMenu *layer_menu = menu.addMenu("Layer");
+    QAction *clone_action = layer_menu->addAction("Clone");
+    QAction *copy_action = layer_menu->addAction("Copy");
+    QAction *paste_action = layer_menu->addAction("Paste");
+    layer_menu->addSeparator();
+    QAction *delete_action = layer_menu->addAction("Delete");
+
+    clone_action->setEnabled(has_layer);
+    copy_action->setEnabled(has_layer);
+    paste_action->setEnabled(can_paste_layer_);
+    delete_action->setEnabled(has_layer);
+
+    QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == clone_action) emit clone_layer_requested(id);
+    else if (chosen == copy_action) emit copy_layer_requested(id);
+    else if (chosen == paste_action) emit paste_layer_requested();
+    else if (chosen == delete_action) emit delete_layer_requested(id);
 }
 
 void LayerStack::set_selected_layer(const std::string &layer_id)
@@ -3043,6 +3251,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     txfl->addRow("Text:",   txt_content_);
     txfl->addRow("Font:",   cmb_font_);
     txfl->addRow("Size:",   spn_size_);
+    cmb_text_style_ = new QComboBox(inner);
+    cmb_text_style_->addItem("Normal", 0);
+    cmb_text_style_->addItem("All caps", 1);
+    cmb_text_style_->addItem("Small caps", 2);
+    cmb_text_style_->addItem("Superscript", 3);
+    cmb_text_style_->addItem("Subscript", 4);
+    cmb_text_style_->setStyleSheet(cmb_font_->styleSheet());
+    txfl->addRow("Text style:", cmb_text_style_);
     auto *bi_row = new QHBoxLayout();
     bi_row->addWidget(chk_bold_);
     bi_row->addWidget(chk_italic_);
@@ -3232,6 +3448,24 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(chk_italic_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->font_italic = v; emit_change(); }
+            });
+    connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int idx) {
+                if (!can_edit()) return;
+                int style = cmb_text_style_->itemData(idx).toInt();
+                layer_->text_all_caps = style == 1;
+                layer_->text_small_caps = style == 2;
+                layer_->text_superscript = style == 3;
+                layer_->text_subscript = style == 4;
+                QSignalBlocker b1(chk_all_caps_);
+                QSignalBlocker b2(chk_small_caps_);
+                QSignalBlocker b3(chk_superscript_);
+                QSignalBlocker b4(chk_subscript_);
+                chk_all_caps_->setChecked(layer_->text_all_caps);
+                chk_small_caps_->setChecked(layer_->text_small_caps);
+                chk_superscript_->setChecked(layer_->text_superscript);
+                chk_subscript_->setChecked(layer_->text_subscript);
+                emit_change();
             });
     connect(chk_all_caps_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
@@ -3645,6 +3879,7 @@ void PropertiesPanel::load_values()
         chk_lock_aspect_->setChecked(true);
         txt_content_->clear();
         edit_image_path_->clear();
+        if (cmb_text_style_) cmb_text_style_->setCurrentIndex(0);
         chk_all_caps_->setChecked(false);
         chk_small_caps_->setChecked(false);
         chk_superscript_->setChecked(false);
@@ -3768,6 +4003,12 @@ void PropertiesPanel::load_values()
     spn_size_->setValue(layer_->font_size);
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
+    int text_style = layer_->text_all_caps ? 1 : (layer_->text_small_caps ? 2 :
+                     (layer_->text_superscript ? 3 : (layer_->text_subscript ? 4 : 0)));
+    if (cmb_text_style_) {
+        int style_index = cmb_text_style_->findData(text_style);
+        cmb_text_style_->setCurrentIndex(style_index >= 0 ? style_index : 0);
+    }
     chk_all_caps_->setChecked(layer_->text_all_caps);
     chk_small_caps_->setChecked(layer_->text_small_caps);
     chk_superscript_->setChecked(layer_->text_superscript);
