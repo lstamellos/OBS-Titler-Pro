@@ -1,7 +1,7 @@
 /*
  * title-data.h
  *
- * Core data model for the OBS Titles plugin.
+ * Core data model for the OBS Titler Pro plugin.
  *
  * A Title is composed of one or more Layers. Each layer has a set of
  * Properties (position, scale, opacity, colour, text …). Properties
@@ -18,6 +18,8 @@
 #include <map>
 #include <memory>
 #include <functional>
+#include <cstdint>
+#include <atomic>
 #include <obs-module.h>
 #include <util/config-file.h>
 
@@ -88,6 +90,8 @@ struct Layer {
     LayerType   type = LayerType::Text;
     bool        visible  = true;
     bool        locked   = false;
+    bool        properties_expanded = false;
+    std::string parent_id;
 
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;
@@ -103,6 +107,7 @@ struct Layer {
 
     /* ----- Text-specific ----- */
     std::string text_content  = "Title";
+    bool        expose_text    = false;
     std::string font_family   = "Helvetica Neue";
     int         font_size     = 72;
     bool        font_bold     = false;
@@ -119,8 +124,53 @@ struct Layer {
     float       rect_height   = 100.0f;
     float       corner_radius = 0.0f;
 
+    /* Keyframable geometry mirrors the static fields above so older saved
+     * titles remain readable while new titles can animate size/origin.
+     */
+    AnimatedProperty box_width  { "box_width",  1920.0 };
+    AnimatedProperty box_height { "box_height", 100.0 };
+
+    /* ----- Geometry anchor / origin -----
+     * Normalized inside the editable bounding box: 0.0 = left/top,
+     * 0.5 = center, 1.0 = right/bottom. The layer position is this origin.
+     */
+    float       origin_x      = 0.5f;
+    float       origin_y      = 0.5f;
+    AnimatedProperty origin_x_prop { "origin_x", 0.5 };
+    AnimatedProperty origin_y_prop { "origin_y", 0.5 };
+
+    /* ----- Drop shadow ----- */
+    bool        shadow_enabled = false;
+    uint32_t    shadow_color   = 0x99000000;
+    float       shadow_opacity = 0.6f;
+    float       shadow_distance = 8.0f;
+    float       shadow_angle = 135.0f;
+    float       shadow_blur = 4.0f;
+    float       shadow_spread = 0.0f;
+    AnimatedProperty shadow_enabled_prop { "shadow_enabled", 0.0 };
+    AnimatedProperty shadow_opacity_prop { "shadow_opacity", 0.6 };
+    AnimatedProperty shadow_distance_prop { "shadow_distance", 8.0 };
+    AnimatedProperty shadow_angle_prop { "shadow_angle", 135.0 };
+    AnimatedProperty shadow_blur_prop { "shadow_blur", 4.0 };
+    AnimatedProperty shadow_spread_prop { "shadow_spread", 0.0 };
+    AnimatedProperty shadow_color_a { "shadow_color_a", 153.0 };
+    AnimatedProperty shadow_color_r { "shadow_color_r", 0.0 };
+    AnimatedProperty shadow_color_g { "shadow_color_g", 0.0 };
+    AnimatedProperty shadow_color_b { "shadow_color_b", 0.0 };
+
+    /* ----- Keyframable color channels, 0-255 ARGB. */
+    AnimatedProperty text_color_a { "text_color_a", 255.0 };
+    AnimatedProperty text_color_r { "text_color_r", 255.0 };
+    AnimatedProperty text_color_g { "text_color_g", 255.0 };
+    AnimatedProperty text_color_b { "text_color_b", 255.0 };
+    AnimatedProperty fill_color_a { "fill_color_a", 255.0 };
+    AnimatedProperty fill_color_r { "fill_color_r",  34.0 };
+    AnimatedProperty fill_color_g { "fill_color_g",  34.0 };
+    AnimatedProperty fill_color_b { "fill_color_b",  34.0 };
+
     /* ----- Image ----- */
     std::string image_path;
+    bool        lock_aspect_ratio = true;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -130,11 +180,17 @@ struct Title {
     std::string id;
     std::string name        = "Untitled";
     double      duration    = 5.0;   /* total clip duration (seconds) */
+    double      loop_start  = 1.0;   /* live-cue loop start (seconds) */
+    double      loop_end    = 4.0;   /* live-cue loop end (seconds) */
     uint32_t    bg_color    = 0x00000000;  /* transparent by default */
     int         width       = 1920;
     int         height      = 1080;
 
     std::vector<std::shared_ptr<Layer>> layers;  /* bottom → top order */
+    std::vector<std::vector<std::string>> live_text_rows;
+    int current_cue_row = -1; /* runtime-only active live text row */
+    int pending_cue_row = -1; /* runtime-only next row waiting for outro */
+    uint64_t cue_revision = 0; /* runtime-only live text cue counter */
 
     /* Helpers */
     std::shared_ptr<Layer> find_layer(const std::string &layer_id) const;
@@ -149,6 +205,7 @@ struct Title {
 class TitleDataStore {
 public:
     static TitleDataStore &instance();
+    static std::string make_uuid();
 
     /* CRUD */
     std::shared_ptr<Title> create_title(const std::string &name = "New Title");
@@ -167,12 +224,14 @@ public:
     using ChangeCallback = std::function<void()>;
     void on_change(ChangeCallback cb) { change_cbs_.push_back(cb); }
     void notify_change();
+    void touch_runtime_change();
+    uint64_t revision() const { return revision_.load(); }
 
 private:
     TitleDataStore() = default;
     std::vector<std::shared_ptr<Title>>  titles_;
     std::vector<ChangeCallback>          change_cbs_;
+    std::atomic<uint64_t>                revision_ { 0 };
 
     static std::string data_path();
-    static std::string make_uuid();
 };
