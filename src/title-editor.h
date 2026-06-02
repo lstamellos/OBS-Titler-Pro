@@ -330,6 +330,7 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+    QCheckBox       *chk_expose_text_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
 
     /* Rectangle/Image geometry controls */

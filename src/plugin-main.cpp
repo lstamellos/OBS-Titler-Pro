@@ -11,6 +11,10 @@
 #include <obs-frontend-api.h>
 #include <QMainWindow>
 #include <QAction>
+#include <QDockWidget>
+#include <QMenu>
+#include <QMenuBar>
+#include <QString>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -20,6 +24,35 @@ static void on_frontend_event(obs_frontend_event event, void *priv);
 
 /* ── module globals ─────────────────────────────────────────────── */
 static TitleDock *g_dock = nullptr;
+static QAction *g_dock_menu_action = nullptr;
+
+
+static QMenu *find_docks_menu(QMainWindow *main)
+{
+    if (!main || !main->menuBar()) return nullptr;
+    for (auto *menu : main->menuBar()->findChildren<QMenu *>()) {
+        QString title = menu->title();
+        title.remove('&');
+        if (title.compare("Docks", Qt::CaseInsensitive) == 0)
+            return menu;
+    }
+    return nullptr;
+}
+
+static void add_docks_menu_entry(QMainWindow *main)
+{
+    QMenu *docks_menu = find_docks_menu(main);
+    if (!docks_menu || !g_dock || g_dock_menu_action) return;
+
+    g_dock_menu_action = docks_menu->addAction("OBS Titler Pro");
+    g_dock_menu_action->setObjectName("obs-titler-pro-docks-menu-action");
+    g_dock_menu_action->setCheckable(true);
+    g_dock_menu_action->setChecked(g_dock->isVisible());
+    QObject::connect(g_dock_menu_action, &QAction::toggled, g_dock,
+                     [](bool visible) { if (g_dock) g_dock->setVisible(visible); });
+    QObject::connect(g_dock, &QDockWidget::visibilityChanged, g_dock_menu_action,
+                     [](bool visible) { if (g_dock_menu_action) g_dock_menu_action->setChecked(visible); });
+}
 
 /* ── module load ────────────────────────────────────────────────── */
 bool obs_module_load(void)
@@ -44,6 +77,10 @@ void obs_module_unload(void)
 {
     TitleDataStore::instance().save();
     obs_frontend_remove_event_callback(on_frontend_event, nullptr);
+    if (g_dock_menu_action) {
+        delete g_dock_menu_action;
+        g_dock_menu_action = nullptr;
+    }
     obs_frontend_remove_dock("obs-titler-pro-dock");
     blog(LOG_INFO, "[OBS Titler Pro] Plugin unloaded.");
 }
@@ -60,6 +97,7 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         g_dock->setWindowTitle("OBS Titler Pro");
 
         obs_frontend_add_custom_qdock("obs-titler-pro-dock", g_dock);
+        add_docks_menu_entry(main);
         blog(LOG_INFO, "[OBS Titler Pro] Dock registered.");
     }
 

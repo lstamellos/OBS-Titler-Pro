@@ -164,6 +164,7 @@ TitleDataStore &TitleDataStore::instance()
 
 void TitleDataStore::notify_change()
 {
+    ++revision_;
     for (auto &cb : change_cbs_) cb();
 }
 
@@ -187,6 +188,7 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     set_color_channels(*layer, true, layer->text_color);
     set_color_channels(*layer, false, layer->fill_color);
     layer->text_content = name;
+    layer->expose_text = true;
     t->layers.push_back(layer);
 
     titles_.push_back(t);
@@ -292,6 +294,7 @@ static json layer_to_json(const Layer &l)
     j["opacity"]  = aprop_to_json(l.opacity);
 
     j["text_content"]  = l.text_content;
+    j["expose_text"]   = l.expose_text;
     j["font_family"]   = l.font_family;
     j["font_size"]     = l.font_size;
     j["font_bold"]     = l.font_bold;
@@ -346,6 +349,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     if (j.contains("opacity"))  l->opacity  = aprop_from_json(j["opacity"],  "opacity");
 
     l->text_content  = j.value("text_content",  "Title");
+    l->expose_text   = j.value("expose_text",   false);
     l->font_family   = j.value("font_family",   "Helvetica Neue");
     l->font_size     = j.value("font_size",     72);
     l->font_bold     = j.value("font_bold",     false);

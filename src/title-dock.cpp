@@ -19,6 +19,9 @@
 #include <QFont>
 #include <QSizePolicy>
 #include <QString>
+#include <QHeaderView>
+#include <QLineEdit>
+#include <QSignalBlocker>
 
 /* ══════════════════════════════════════════════════════════════════
  *  Constructor
@@ -31,7 +34,10 @@ TitleDock::TitleDock(QWidget *parent)
     build_ui();
 
     /* React to external data changes */
-    TitleDataStore::instance().on_change([this]() { refresh(); });
+    TitleDataStore::instance().on_change([this]() {
+        if (!updating_exposed_text_)
+            refresh();
+    });
 
     populate_list();
 }
@@ -79,12 +85,32 @@ void TitleDock::build_ui()
     toolbar->addWidget(btn_scene_);
     root->addLayout(toolbar);
 
-    /* ── list ── */
+    /* ── template/title section ── */
+    auto *template_lbl = new QLabel("Title templates", container_);
+    template_lbl->setStyleSheet("font-weight:bold;color:#ddd;");
+    root->addWidget(template_lbl);
+
     list_ = new QListWidget(container_);
     list_->setAlternatingRowColors(true);
     list_->setSelectionMode(QAbstractItemView::SingleSelection);
     list_->setMinimumHeight(120);
     root->addWidget(list_, 1);
+
+    /* ── exposed text section ── */
+    text_editor_lbl_ = new QLabel("Live text", container_);
+    text_editor_lbl_->setStyleSheet("font-weight:bold;color:#ddd;margin-top:4px;");
+    root->addWidget(text_editor_lbl_);
+
+    text_table_ = new QTableWidget(container_);
+    text_table_->setRowCount(1);
+    text_table_->setMinimumHeight(72);
+    text_table_->setAlternatingRowColors(false);
+    text_table_->verticalHeader()->hide();
+    text_table_->horizontalHeader()->setStretchLastSection(true);
+    text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    text_table_->setSelectionMode(QAbstractItemView::NoSelection);
+    text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    root->addWidget(text_table_, 0);
 
     /* ── status ── */
     status_lbl_ = new QLabel("No title selected", container_);
@@ -149,6 +175,7 @@ void TitleDock::populate_list()
 void TitleDock::refresh()
 {
     populate_list();
+    populate_exposed_text();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -181,6 +208,180 @@ void TitleDock::on_selection_changed()
             ? "Click + or Templates to create a title"
             : "No title selected");
     }
+    populate_exposed_text();
+}
+
+void TitleDock::populate_exposed_text()
+{
+    if (!text_table_) return;
+    QSignalBlocker block(text_table_);
+    text_table_->clear();
+    text_table_->setRowCount(1);
+    text_table_->setColumnCount(0);
+
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) {
+        text_editor_lbl_->setText("Live text — select a title");
+        text_table_->setEnabled(false);
+        return;
+    }
+
+    std::vector<std::shared_ptr<Layer>> exposed;
+    for (const auto &layer : title->layers) {
+        if (layer->type == LayerType::Text && layer->expose_text)
+            exposed.push_back(layer);
+    }
+
+    text_table_->setEnabled(!exposed.empty());
+    text_editor_lbl_->setText(exposed.empty()
+        ? "Live text — expose text layers in the editor"
+        : "Live text");
+    text_table_->setColumnCount((int)exposed.size());
+
+    QStringList headers;
+    for (const auto &layer : exposed)
+        headers << QString::fromStdString(layer->name);
+    text_table_->setHorizontalHeaderLabels(headers);
+
+    for (int col = 0; col < (int)exposed.size(); ++col) {
+        auto layer = exposed[col];
+        auto *edit = new QLineEdit(QString::fromStdString(layer->text_content), text_table_);
+        edit->setPlaceholderText(QString::fromStdString(layer->name));
+        edit->setStyleSheet("QLineEdit{padding:3px;}");
+        connect(edit, &QLineEdit::textEdited, this, [this, layer](const QString &text) {
+            updating_exposed_text_ = true;
+            layer->text_content = text.toStdString();
+            TitleDataStore::instance().save();
+            TitleDataStore::instance().notify_change();
+            updating_exposed_text_ = false;
+        });
+        text_table_->setCellWidget(0, col, edit);
+    }
+}
+
+
+void TitleDock::select_title(const std::string &id)
+{
+    populate_list();
+    for (int i = 0; i < list_->count(); ++i) {
+        if (list_->item(i)->data(Qt::UserRole).toString().toStdString() == id) {
+            list_->setCurrentRow(i);
+            break;
+        }
+    }
+}
+
+std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
+                                                         int template_id)
+{
+    auto title = TitleDataStore::instance().create_title(name);
+    title->layers.clear();
+    title->bg_color = 0x00000000;
+    title->duration = 7.0;
+
+    auto add_rect = [&](const std::string &layer_name,
+                        double x, double y, float w, float h,
+                        uint32_t color, float radius = 0.0f) {
+        auto layer = std::make_shared<Layer>();
+        layer->id = TitleDataStore::make_uuid();
+        layer->name = layer_name;
+        layer->type = LayerType::SolidRect;
+        layer->pos_x.static_value = x;
+        layer->pos_y.static_value = y;
+        layer->rect_width = w;
+        layer->rect_height = h;
+        layer->box_width.static_value = w;
+        layer->box_height.static_value = h;
+        layer->corner_radius = radius;
+        layer->fill_color = color;
+        layer->fill_color_a.static_value = (color >> 24) & 0xFF;
+        layer->fill_color_r.static_value = (color >> 16) & 0xFF;
+        layer->fill_color_g.static_value = (color >> 8) & 0xFF;
+        layer->fill_color_b.static_value = color & 0xFF;
+        layer->out_time = title->duration;
+        title->layers.push_back(layer);
+        return layer;
+    };
+
+    auto add_text = [&](const std::string &layer_name,
+                        const std::string &text,
+                        double x, double y, int size,
+                        uint32_t color, bool bold = false,
+                        int align_h = 1, int align_v = 1) {
+        auto layer = std::make_shared<Layer>();
+        layer->id = TitleDataStore::make_uuid();
+        layer->name = layer_name;
+        layer->type = LayerType::Text;
+        layer->text_content = text;
+        layer->expose_text = true;
+        layer->font_family = "Arial";
+        layer->font_size = size;
+        layer->font_bold = bold;
+        layer->text_color = color;
+        layer->text_color_a.static_value = (color >> 24) & 0xFF;
+        layer->text_color_r.static_value = (color >> 16) & 0xFF;
+        layer->text_color_g.static_value = (color >> 8) & 0xFF;
+        layer->text_color_b.static_value = color & 0xFF;
+        layer->rect_width = 960.0f;
+        layer->rect_height = 160.0f;
+        layer->box_width.static_value = layer->rect_width;
+        layer->box_height.static_value = layer->rect_height;
+        layer->pos_x.static_value = x;
+        layer->pos_y.static_value = y;
+        layer->align_h = align_h;
+        layer->align_v = align_v;
+        layer->out_time = title->duration;
+        title->layers.push_back(layer);
+        return layer;
+    };
+
+    switch (template_id) {
+    case 1: /* Lower third */
+        title->duration = 8.0;
+        add_rect("Lower Third Backplate", 640, 835, 1120, 155, 0xD0161B24, 18.0f);
+        add_rect("Accent Bar", 120, 835, 18, 155, 0xFF00A3FF, 9.0f);
+        add_text("Name", name, 670, 800, 58, 0xFFFFFFFF, true, 0, 1);
+        add_text("Subtitle", "Subtitle / role", 670, 872, 34, 0xFFE8E8E8, false, 0, 1);
+        break;
+    case 2: /* Center title */
+        title->duration = 6.0;
+        add_rect("Soft Panel", 960, 540, 1280, 270, 0xB0101018, 28.0f);
+        add_rect("Top Accent", 960, 395, 520, 10, 0xFF00A3FF, 5.0f);
+        add_text("Main Title", name, 960, 505, 86, 0xFFFFFFFF, true, 1, 1);
+        add_text("Subtitle", "Editable subtitle", 960, 610, 42, 0xFFE0E0E0, false, 1, 1);
+        break;
+    case 3: /* Ticker / strap */
+        title->duration = 12.0;
+        add_rect("Ticker Background", 960, 1010, 1920, 110, 0xE0101010, 0.0f);
+        add_rect("Ticker Accent", 125, 1010, 250, 110, 0xFF0078D4, 0.0f);
+        add_text("Ticker Label", "LIVE", 125, 1010, 44, 0xFFFFFFFF, true, 1, 1);
+        add_text("Ticker Text", name, 1030, 1010, 44, 0xFFFFFFFF, false, 0, 1);
+        break;
+    default:
+        add_text("Title Text", name, 960, 540, 72, 0xFFFFFFFF, true, 1, 1);
+        break;
+    }
+
+    for (auto &layer : title->layers)
+        layer->out_time = title->duration;
+
+    TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
+    return title;
+}
+
+void TitleDock::create_title_from_template(const std::string &default_name,
+                                           int template_id)
+{
+    bool ok = false;
+    QString name = QInputDialog::getText(
+        this, "New Template Title", "Title text:", QLineEdit::Normal,
+        QString::fromStdString(default_name), &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
+
+    auto title = create_template_title(name.trimmed().toStdString(), template_id);
+    select_title(title->id);
+    on_edit();
 }
 
 

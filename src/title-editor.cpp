@@ -2193,8 +2193,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     chk_bold_   = new QCheckBox("Bold",   inner);
     chk_italic_ = new QCheckBox("Italic", inner);
+    chk_expose_text_ = new QCheckBox("Expose in dock", inner);
+    chk_expose_text_->setToolTip("Show this text layer in the OBS Titler Pro dock for fast live edits.");
     chk_bold_->setStyleSheet("color:#ccc;");
     chk_italic_->setStyleSheet("color:#ccc;");
+    chk_expose_text_->setStyleSheet("color:#ccc;");
 
     txfl->addRow("Text:",   txt_content_);
     txfl->addRow("Font:",   cmb_font_);
@@ -2204,6 +2207,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bi_row->addWidget(chk_italic_);
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
+    txfl->addRow("Live edit:", chk_expose_text_);
     btn_text_color_ = new QPushButton(inner);
     btn_kf_text_color_ = mk_kf_button("Toggle text color keyframe");
     txfl->addRow("Color:", with_kf(btn_text_color_, btn_kf_text_color_));
@@ -2301,6 +2305,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(chk_italic_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->font_italic = v; emit_change(); }
+            });
+    connect(chk_expose_text_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) { layer_->expose_text = v; emit_change(); }
             });
     connect(btn_text_color_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
@@ -2591,6 +2599,7 @@ void PropertiesPanel::load_values()
     spn_size_->setValue(layer_->font_size);
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
+    chk_expose_text_->setChecked(layer_->expose_text);
 
     loading_values_ = false;
 }

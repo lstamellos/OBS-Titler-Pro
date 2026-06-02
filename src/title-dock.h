@@ -16,6 +16,7 @@
 #include <QDockWidget>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QTableWidget>
 #include <QPushButton>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -49,6 +50,7 @@ private slots:
 private:
     void build_ui();
     void populate_list();
+    void populate_exposed_text();
     std::string selected_id() const;
     std::shared_ptr<Title> create_template_title(const std::string &name, int template_id);
     void select_title(const std::string &id);
@@ -63,6 +65,9 @@ private:
     QPushButton  *btn_edit_   = nullptr;
     QPushButton  *btn_scene_  = nullptr;
     QLabel       *status_lbl_ = nullptr;
+    QLabel       *text_editor_lbl_ = nullptr;
+    QTableWidget *text_table_ = nullptr;
+    bool          updating_exposed_text_ = false;
 
     TitleEditor  *editor_     = nullptr;
 };

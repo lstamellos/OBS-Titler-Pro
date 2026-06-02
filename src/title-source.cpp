@@ -62,6 +62,7 @@ struct TitleSourceData {
 
     /* Dirty flag – avoid re-uploading unchanged frames */
     bool dirty = true;
+    uint64_t seen_store_revision = 0;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -419,6 +420,12 @@ static void source_video_tick(void *priv, float seconds)
                 data->playing  = false;
             }
         }
+        data->dirty = true;
+    }
+
+    uint64_t revision = TitleDataStore::instance().revision();
+    if (revision != data->seen_store_revision) {
+        data->seen_store_revision = revision;
         data->dirty = true;
     }
 
