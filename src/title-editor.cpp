@@ -711,48 +711,32 @@ void TitleEditor::align_selected_to_canvas(int x_mode, int y_mode)
 
 void TitleEditor::align_selected_layers_horizontal()
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
-    if (ids.size() < 2) return;
-
-    struct Entry { std::shared_ptr<Layer> layer; double lt; double width; double scale; };
-    std::vector<Entry> entries;
-    double min_left = std::numeric_limits<double>::infinity();
-    double max_right = -std::numeric_limits<double>::infinity();
-
-    for (const auto &id : ids) {
-        auto layer = title_->find_layer(id);
-        if (!layer || layer->locked) continue;
-        double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
-        double width = eval_box_width(*layer, lt);
-        double scale = layer->scale_x.evaluate(lt);
-        double left = layer->pos_x.evaluate(lt) - layer->origin_x * width * scale;
-        double right = layer->pos_x.evaluate(lt) + (1.0 - layer->origin_x) * width * scale;
-        min_left = std::min(min_left, left);
-        max_right = std::max(max_right, right);
-        entries.push_back({layer, lt, width, scale});
-    }
-
-    if (entries.size() < 2 || !std::isfinite(min_left) || !std::isfinite(max_right)) return;
-    double target_center = (min_left + max_right) / 2.0;
-    std::shared_ptr<Layer> last_layer;
-    for (const auto &entry : entries) {
-        double next_x = target_center - (0.5 - entry.layer->origin_x) * entry.width * entry.scale;
-        set_animated_value(entry.layer->pos_x, entry.lt, next_x);
-        last_layer = entry.layer;
-    }
-    on_title_modified();
-    if (props_ && last_layer) props_->set_layer(last_layer, playhead_);
+    align_selected_layers(1, -1);
 }
 
 void TitleEditor::align_selected_layers_vertical()
 {
+    align_selected_layers(-1, 1);
+}
+
+void TitleEditor::align_selected_layers(int x_mode, int y_mode)
+{
     if (!title_ || sel_layer_id_.empty()) return;
     auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
-    if (ids.size() < 2) return;
+    if (ids.empty()) return;
 
-    struct Entry { std::shared_ptr<Layer> layer; double lt; double height; double scale; };
+    struct Entry {
+        std::shared_ptr<Layer> layer;
+        double lt;
+        double width;
+        double height;
+        double scale_x;
+        double scale_y;
+    };
+
     std::vector<Entry> entries;
+    double min_left = std::numeric_limits<double>::infinity();
+    double max_right = -std::numeric_limits<double>::infinity();
     double min_top = std::numeric_limits<double>::infinity();
     double max_bottom = -std::numeric_limits<double>::infinity();
 
@@ -760,21 +744,47 @@ void TitleEditor::align_selected_layers_vertical()
         auto layer = title_->find_layer(id);
         if (!layer || layer->locked) continue;
         double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
+        double width = eval_box_width(*layer, lt);
         double height = eval_box_height(*layer, lt);
-        double scale = layer->scale_y.evaluate(lt);
-        double top = layer->pos_y.evaluate(lt) - layer->origin_y * height * scale;
-        double bottom = layer->pos_y.evaluate(lt) + (1.0 - layer->origin_y) * height * scale;
+        double sx = layer->scale_x.evaluate(lt);
+        double sy = layer->scale_y.evaluate(lt);
+        double left = layer->pos_x.evaluate(lt) - layer->origin_x * width * sx;
+        double right = layer->pos_x.evaluate(lt) + (1.0 - layer->origin_x) * width * sx;
+        double top = layer->pos_y.evaluate(lt) - layer->origin_y * height * sy;
+        double bottom = layer->pos_y.evaluate(lt) + (1.0 - layer->origin_y) * height * sy;
+        min_left = std::min(min_left, left);
+        max_right = std::max(max_right, right);
         min_top = std::min(min_top, top);
         max_bottom = std::max(max_bottom, bottom);
-        entries.push_back({layer, lt, height, scale});
+        entries.push_back({layer, lt, width, height, sx, sy});
     }
 
-    if (entries.size() < 2 || !std::isfinite(min_top) || !std::isfinite(max_bottom)) return;
-    double target_center = (min_top + max_bottom) / 2.0;
+    if (entries.empty()) return;
+    if (alignment_target_ == 0 && entries.size() < 2) return;
+
+    double target_left = alignment_target_ == 2 ? 0.0 : min_left;
+    double target_hcenter = alignment_target_ == 2 ? title_->width / 2.0 : (min_left + max_right) / 2.0;
+    double target_right = alignment_target_ == 2 ? title_->width : max_right;
+    double target_top = alignment_target_ == 2 ? 0.0 : min_top;
+    double target_vcenter = alignment_target_ == 2 ? title_->height / 2.0 : (min_top + max_bottom) / 2.0;
+    double target_bottom = alignment_target_ == 2 ? title_->height : max_bottom;
+
     std::shared_ptr<Layer> last_layer;
     for (const auto &entry : entries) {
-        double next_y = target_center - (0.5 - entry.layer->origin_y) * entry.height * entry.scale;
-        set_animated_value(entry.layer->pos_y, entry.lt, next_y);
+        if (x_mode >= 0) {
+            double next_x = entry.layer->pos_x.evaluate(entry.lt);
+            if (x_mode == 0) next_x = target_left + entry.layer->origin_x * entry.width * entry.scale_x;
+            if (x_mode == 1) next_x = target_hcenter - (0.5 - entry.layer->origin_x) * entry.width * entry.scale_x;
+            if (x_mode == 2) next_x = target_right - (1.0 - entry.layer->origin_x) * entry.width * entry.scale_x;
+            set_animated_value(entry.layer->pos_x, entry.lt, next_x);
+        }
+        if (y_mode >= 0) {
+            double next_y = entry.layer->pos_y.evaluate(entry.lt);
+            if (y_mode == 0) next_y = target_top + entry.layer->origin_y * entry.height * entry.scale_y;
+            if (y_mode == 1) next_y = target_vcenter - (0.5 - entry.layer->origin_y) * entry.height * entry.scale_y;
+            if (y_mode == 2) next_y = target_bottom - (1.0 - entry.layer->origin_y) * entry.height * entry.scale_y;
+            set_animated_value(entry.layer->pos_y, entry.lt, next_y);
+        }
         last_layer = entry.layer;
     }
     on_title_modified();
@@ -825,26 +835,45 @@ void TitleEditor::build_toolbar()
     toolbar_->addWidget(zoom_in);
 
     toolbar_->addSeparator();
-    QAction *align_h = toolbar_->addAction("Align H");
-    align_h->setToolTip("Align selected layers to the same horizontal center");
-    connect(align_h, &QAction::triggered, this, &TitleEditor::align_selected_layers_horizontal);
-    QAction *align_v = toolbar_->addAction("Align V");
-    align_v->setToolTip("Align selected layers to the same vertical center");
-    connect(align_v, &QAction::triggered, this, &TitleEditor::align_selected_layers_vertical);
+    auto *align_target = new QToolButton(toolbar_);
+    align_target->setText("▣⌄");
+    align_target->setToolTip("Alignment target");
+    align_target->setPopupMode(QToolButton::InstantPopup);
+    align_target->setStyleSheet("QToolButton{color:#ddd;background:#3a3a3a;border:1px solid #666;border-radius:2px;padding:3px 8px;} QToolButton::menu-indicator{image:none;}");
+    auto *align_menu = new QMenu(align_target);
+    QAction *target_selection = align_menu->addAction("Align to Selection");
+    QAction *target_key = align_menu->addAction("Align to Key Object");
+    target_key->setEnabled(false);
+    QAction *target_artboard = align_menu->addAction("Align to Artboard");
+    target_selection->setCheckable(true);
+    target_artboard->setCheckable(true);
+    target_artboard->setChecked(true);
+    auto update_alignment_target = [this, align_target, target_selection, target_artboard](int target) {
+        alignment_target_ = target;
+        target_selection->setChecked(target == 0);
+        target_artboard->setChecked(target == 2);
+        align_target->setToolTip(target == 0 ? "Align to Selection" : "Align to Artboard");
+    };
+    connect(target_selection, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(0); });
+    connect(target_artboard, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(2); });
+    align_target->setMenu(align_menu);
+    toolbar_->addWidget(align_target);
 
-    auto *align_canvas = new QComboBox(toolbar_);
-    align_canvas->addItem("Align to canvas…", -1);
-    for (const QString &label : QStringList{"Top Left", "Top Center", "Top Right", "Center Left", "Center", "Center Right", "Bottom Left", "Bottom Center", "Bottom Right"})
-        align_canvas->addItem(label, align_canvas->count() - 1);
-    align_canvas->setToolTip("Align the selected layer to the canvas");
-    connect(align_canvas, QOverload<int>::of(&QComboBox::activated), this, [this, align_canvas](int idx) {
-        int anchor = align_canvas->itemData(idx).toInt();
-        if (anchor >= 0) {
-            align_selected_to_canvas(anchor % 3, anchor / 3);
-            align_canvas->setCurrentIndex(0);
-        }
-    });
-    toolbar_->addWidget(align_canvas);
+    auto add_align_action = [this](const QString &text, const QString &tip, int x_mode, int y_mode) {
+        QAction *action = toolbar_->addAction(text);
+        action->setToolTip(tip);
+        connect(action, &QAction::triggered, this, [this, x_mode, y_mode]() {
+            align_selected_layers(x_mode, y_mode);
+        });
+        return action;
+    };
+    add_align_action("|◧", "Align Left", 0, -1);
+    add_align_action("↔", "Align Horizontal Center", 1, -1);
+    add_align_action("◨|", "Align Right", 2, -1);
+    add_align_action("▔", "Align Top", -1, 0);
+    add_align_action("↕", "Align Vertical Center", -1, 1);
+    add_align_action("▁", "Align Bottom", -1, 2);
+    add_align_action("▦", "Align Center to Artboard", 1, 1);
 
     act_safe_guides_ = toolbar_->addAction("Safe");
     act_safe_guides_->setCheckable(true);

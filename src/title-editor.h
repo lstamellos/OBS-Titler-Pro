@@ -93,6 +93,7 @@ private:
     void align_selected_to_canvas(int x_mode, int y_mode);
     void align_selected_layers_horizontal();
     void align_selected_layers_vertical();
+    void align_selected_layers(int x_mode, int y_mode);
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -117,6 +118,7 @@ private:
     QAction         *act_prev_kf_ = nullptr;
     QAction         *act_next_kf_ = nullptr;
     QAction         *act_safe_guides_ = nullptr;
+    int              alignment_target_ = 2; /* 0=selection, 2=artboard/canvas */
 };
 
 /* ══════════════════════════════════════════════════════════════════
