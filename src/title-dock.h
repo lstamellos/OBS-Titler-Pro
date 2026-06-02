@@ -59,9 +59,7 @@ private:
     void populate_list();
     void populate_exposed_text();
     std::string selected_id() const;
-    std::shared_ptr<Title> create_template_title(const std::string &name, int template_id);
     void select_title(const std::string &id);
-    void create_title_from_template(const std::string &name, int template_id);
 
     QWidget      *container_  = nullptr;
     QListWidget  *list_       = nullptr;

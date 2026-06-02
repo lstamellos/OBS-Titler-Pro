@@ -133,18 +133,16 @@ void TitleDock::build_ui()
     btn_scene_= new QPushButton("▶ Scene",  container_);
 
     btn_add_->setToolTip("New blank title");
-    btn_tpl_->setToolTip("Create a title from a Titler-style template");
     btn_dup_->setToolTip("Duplicate");
-    btn_rename_->setToolTip("Rename selected title template");
+    btn_rename_->setToolTip("Rename selected title");
     btn_del_->setToolTip("Delete");
-    btn_export_->setToolTip("Export selected title template to a file");
-    btn_import_->setToolTip("Import a title template file");
+    btn_export_->setToolTip("Export selected title to a file");
+    btn_import_->setToolTip("Import a title file");
     btn_edit_->setToolTip("Open title editor");
     btn_scene_->setToolTip("Add selected title to current scene");
 
     for (auto *b : {btn_add_, btn_dup_, btn_del_})
         b->setFixedWidth(28);
-    btn_tpl_->setFixedHeight(24);
     btn_rename_->setFixedHeight(24);
     btn_export_->setFixedHeight(24);
     btn_import_->setFixedHeight(24);
@@ -152,7 +150,6 @@ void TitleDock::build_ui()
     btn_scene_->setFixedHeight(24);
 
     toolbar->addWidget(btn_add_);
-    toolbar->addWidget(btn_tpl_);
     toolbar->addWidget(btn_import_);
     toolbar->addWidget(btn_dup_);
     toolbar->addWidget(btn_del_);
@@ -326,7 +323,7 @@ void TitleDock::on_selection_changed()
                     .arg(t->duration, 0, 'f', 1));
     } else {
         status_lbl_->setText(list_->count() == 0
-            ? "Click + or Templates to create a title"
+            ? "Click + to create a title"
             : "No title selected");
     }
     populate_exposed_text();
@@ -650,21 +647,6 @@ void TitleDock::on_add()
     on_edit();
 }
 
-void TitleDock::on_add_template_lower_third()
-{
-    create_title_from_template("Speaker Name", 1);
-}
-
-void TitleDock::on_add_template_center_title()
-{
-    create_title_from_template("Program Title", 2);
-}
-
-void TitleDock::on_add_template_ticker()
-{
-    create_title_from_template("Breaking news headline goes here", 3);
-}
-
 void TitleDock::on_duplicate()
 {
     auto src = TitleDataStore::instance().get_title(selected_id());
@@ -716,7 +698,7 @@ void TitleDock::on_export()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Export Title Template", safe_name + QStringLiteral(".otpt"),
-        "OBS Titler Pro Templates (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
+        "OBS Titler Pro Title Files (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
     if (path.isEmpty()) return;
 
     if (QFileInfo(path).suffix().isEmpty())
@@ -736,7 +718,7 @@ void TitleDock::on_import()
 {
     QString path = QFileDialog::getOpenFileName(
         this, "Import Title Template", QString(),
-        "OBS Titler Pro Templates (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
+        "OBS Titler Pro Title Files (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
     if (path.isEmpty()) return;
 
     std::string error;

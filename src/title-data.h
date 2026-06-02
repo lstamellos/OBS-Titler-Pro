@@ -112,6 +112,12 @@ struct Layer {
     int         font_size     = 72;
     bool        font_bold     = false;
     bool        font_italic   = false;
+    bool        text_all_caps = false;
+    bool        text_small_caps = false;
+    bool        text_superscript = false;
+    bool        text_subscript = false;
+    bool        text_underline = false;
+    bool        text_strikeout = false;
     uint32_t    text_color    = 0xFFFFFFFF;  /* ARGB */
     uint32_t    stroke_color  = 0x00000000;
     float       stroke_width  = 0.0f;

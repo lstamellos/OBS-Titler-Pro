@@ -26,7 +26,7 @@ OBS-Titler-Pro/
 | Component | OBS Integration | Purpose |
 |---|---|---|
 | `TitleSource` | `obs_source_type INPUT` | Renders a title to the OBS video mix per-frame via Cairo → `gs_texture` |
-| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with blank-title creation, Titler-style templates, and scene-add button |
+| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with blank-title creation, import/export, live-text cues, and scene-add button |
 | `TitleEditor` | `QDialog` (non-modal) | Full AE-style editor with canvas, layer stack, timeline, properties |
 | `TitleDataStore` | Singleton | Owns all `Title` objects; serialises to `obs-titler-pro/titles.json` |
 
@@ -138,9 +138,9 @@ Windows to load the plugin at OBS startup.
 OBS Titler Pro by OmniaTV is designed around a Titler-style flow:
 
 1. Open the **OBS Titler Pro** dock.
-2. Click **Templates** and choose **Lower Third**, **Centered Title**, or **Ticker / Strap**.
-3. Enter the starter text; the editor opens with editable text and shape layers.
-4. Adjust text/position/style in the editor. Changes auto-save and update the title store.
+2. Click **+** to create a blank title, or **Import** to load a saved `.otpt`/JSON title file.
+3. Edit layers in the editor, including text styling, outlines, shadows, and exposed live-text fields.
+4. Changes auto-save and update the title store.
 5. Click **▶ Scene** in the dock to add the selected title source to the active OBS scene.
 
 ---
@@ -161,7 +161,7 @@ Titles are saved in the OBS profile config directory:
 [
   {
     "id": "uuid",
-    "name": "My Lower Third",
+    "name": "My Title",
     "duration": 5.0,
     "bg_color": 0,
     "width": 1920,

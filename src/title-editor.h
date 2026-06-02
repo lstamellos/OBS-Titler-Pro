@@ -362,9 +362,17 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+    QCheckBox       *chk_all_caps_ = nullptr;
+    QCheckBox       *chk_small_caps_ = nullptr;
+    QCheckBox       *chk_superscript_ = nullptr;
+    QCheckBox       *chk_subscript_ = nullptr;
+    QCheckBox       *chk_underline_ = nullptr;
+    QCheckBox       *chk_strikeout_ = nullptr;
     QCheckBox       *chk_expose_text_ = nullptr;
     QComboBox       *cmb_text_align_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
+    QPushButton     *btn_outline_color_ = nullptr;
+    QDoubleSpinBox  *spn_outline_width_ = nullptr;
 
     /* Rectangle/Image geometry controls */
     QDoubleSpinBox  *spn_layer_w_   = nullptr;
@@ -372,6 +380,9 @@ private:
     QDoubleSpinBox  *spn_rect_corner_   = nullptr;
     QPushButton     *btn_fill_color_ = nullptr;
     QWidget         *row_fill_color_ = nullptr;
+    QPushButton     *btn_shape_outline_color_ = nullptr;
+    QDoubleSpinBox  *spn_shape_outline_width_ = nullptr;
+    QWidget         *row_shape_outline_color_ = nullptr;
 
     /* Image controls */
     QLineEdit       *edit_image_path_ = nullptr;
