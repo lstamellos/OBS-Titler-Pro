@@ -1415,7 +1415,7 @@ void TitleEditor::on_playhead_changed(double t)
         time_lbl_->setText(QString("%1  (%2 fps)").arg(format_timecode(t)).arg(obs_frame_rate(), 0, 'f', 2));
 }
 
-void TitleEditor::on_title_modified()
+QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const
 {
     if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
     canvas_->refresh_preview();
@@ -1426,18 +1426,23 @@ void TitleEditor::on_title_modified()
     TitleDataStore::instance().save();
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  CanvasPreview
- * ══════════════════════════════════════════════════════════════════ */
-CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
+QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
 {
-    setMinimumSize(400, 225);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setStyleSheet("background:#111;");
-    setMouseTracking(true);
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = -layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double dx = canvas_pt.x() - px;
+    double dy = canvas_pt.y() - py;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    double sx = std::max(0.0001, layer.scale_x.evaluate(lt));
+    double sy = std::max(0.0001, layer.scale_y.evaluate(lt));
+    return QPointF((dx * c - dy * ss) / sx,
+                   (dx * ss + dy * c) / sy);
 }
 
-void CanvasPreview::set_title(std::shared_ptr<Title> t)
+QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
 {
     title_ = t; dirty_ = true; update();
 }
@@ -1448,6 +1453,129 @@ void CanvasPreview::set_playhead(double t)
 }
 
 void CanvasPreview::set_selected_layer(const std::string &lid)
+{
+    sel_layer_id_ = lid; update();
+}
+
+void CanvasPreview::set_safe_guides_visible(bool visible)
+{
+    safe_guides_visible_ = visible;
+    update();
+}
+
+void CanvasPreview::refresh_preview()
+{
+    dirty_ = true;
+    update();
+}
+
+std::shared_ptr<Layer> CanvasPreview::selected_layer() const
+{
+    return title_ ? title_->find_layer(sel_layer_id_) : nullptr;
+}
+
+QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
+{
+    double lt = playhead_ - layer.in_time;
+    double w = eval_box_width(layer, lt);
+    double h = eval_box_height(layer, lt);
+    double ox = eval_origin_x(layer, lt);
+    double oy = eval_origin_y(layer, lt);
+    return QRectF(-ox * w, -oy * h, w, h);
+}
+
+double CanvasPreview::view_scale() const
+{
+    if (!title_) return 1.0;
+    return std::min((double)width() / title_->width,
+                    (double)height() / title_->height) * zoom_;
+}
+
+QPointF CanvasPreview::view_origin() const
+{
+    if (!title_) return QPointF(0, 0);
+    double scale = view_scale();
+    return QPointF((width() - title_->width * scale) / 2.0,
+                   (height() - title_->height * scale) / 2.0);
+}
+
+QPointF CanvasPreview::view_to_canvas(const QPointF &view_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF((view_pt.x() - origin.x()) / scale,
+                   (view_pt.y() - origin.y()) / scale);
+}
+
+QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF(origin.x() + canvas_pt.x() * scale,
+                   origin.y() + canvas_pt.y() * scale);
+}
+
+QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = -layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double dx = canvas_pt.x() - px;
+    double dy = canvas_pt.y() - py;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    double sx = std::max(0.0001, layer.scale_x.evaluate(lt));
+    double sy = std::max(0.0001, layer.scale_y.evaluate(lt));
+    return QPointF((dx * c - dy * ss) / sx,
+                   (dx * ss + dy * c) / sy);
+}
+
+QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double sx = layer.scale_x.evaluate(lt);
+    double sy = layer.scale_y.evaluate(lt);
+    double x = layer_pt.x() * sx;
+    double y = layer_pt.y() * sy;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    return QPointF(px + x * c - y * ss,
+                   py + x * ss + y * c);
+}
+
+CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt) const
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked) return DragMode::None;
+
+    double scale = view_scale();
+    double handle = 8.0 / std::max(0.1, scale);
+    QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    QRectF r = layer_local_rect(*layer);
+
+    auto near_pt = [&](const QPointF &p) {
+        return std::abs(local.x() - p.x()) <= handle &&
+               std::abs(local.y() - p.y()) <= handle;
+    };
+
+    if (near_pt(r.topLeft())) return DragMode::ResizeNW;
+    if (near_pt(QPointF(r.center().x(), r.top()))) return DragMode::ResizeN;
+    if (near_pt(r.topRight())) return DragMode::ResizeNE;
+    if (near_pt(QPointF(r.right(), r.center().y()))) return DragMode::ResizeE;
+    if (near_pt(r.bottomRight())) return DragMode::ResizeSE;
+    if (near_pt(QPointF(r.center().x(), r.bottom()))) return DragMode::ResizeS;
+    if (near_pt(r.bottomLeft())) return DragMode::ResizeSW;
+    if (near_pt(QPointF(r.left(), r.center().y()))) return DragMode::ResizeW;
+    if (std::hypot(local.x(), local.y()) <= handle * 1.25) return DragMode::Origin;
+    if (r.adjusted(-handle, -handle, handle, handle).contains(local)) return DragMode::Move;
+    return DragMode::None;
+}
+
+void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
     sel_layer_id_ = lid; update();
 }
