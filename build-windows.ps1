@@ -62,14 +62,32 @@ function Assert-UniqueSourceDefinition {
         exit 1
     }
 
-    $Text = Get-Content -Raw -Path $File
+    $Lines = Get-Content -Path $File
     foreach ($Definition in $Definitions) {
-        # Count only real out-of-class function bodies that start at the
-        # beginning of a source line and are followed by an opening brace. This
-        # avoids false positives from calls, comments, declarations, strings,
-        # or diagnostic text that happens to contain the same signature fragment.
-        $Pattern = "(?ms)^[`t ]*" + [regex]::Escape($Definition) + "[^;{]*\{"
-        $Count = ([regex]::Matches($Text, $Pattern)).Count
+        # Count only real out-of-class function bodies. A body must start at
+        # the beginning of a source line with the watched signature fragment
+        # and must be followed by an opening brace on that line or on the next
+        # non-empty line. This avoids false positives from calls, declarations,
+        # comments, strings, or diagnostic text containing the same fragment.
+        $Count = 0
+        for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
+            $Line = $Lines[$Index].TrimStart()
+            if (-not $Line.StartsWith($Definition)) { continue }
+            if ($Line.Contains(';')) { continue }
+
+            $HasBodyBrace = $Line.Contains('{')
+            if (-not $HasBodyBrace) {
+                for ($Next = $Index + 1; $Next -lt $Lines.Count; $Next++) {
+                    $NextLine = $Lines[$Next].Trim()
+                    if ([string]::IsNullOrWhiteSpace($NextLine)) { continue }
+                    $HasBodyBrace = $NextLine.StartsWith('{')
+                    break
+                }
+            }
+
+            if ($HasBodyBrace) { $Count++ }
+        }
+
         if ($Count -gt 1) {
             Write-Error "Duplicate definition detected in ${File}: '$Definition' appears $Count times. Remove the duplicate body before building."
             exit 1
