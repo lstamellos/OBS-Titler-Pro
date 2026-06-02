@@ -48,8 +48,8 @@ $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 Write-Host "=== Starting OBS Titler Pro build process ==="
 
 
-# Guard against accidental duplicate out-of-class bodies in the large editor
-# translation unit. MSVC reports these late during compilation, so fail early
+# Guard against accidental duplicate out-of-class bodies in large UI
+# translation units. MSVC reports these late during compilation, so fail early
 # with the exact repeated definitions that have previously broken Windows builds.
 function Assert-UniqueSourceDefinition {
     param(
@@ -79,6 +79,13 @@ Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
     "TitlePropertiesPanel::TitlePropertiesPanel(",
     "void TitlePropertiesPanel::set_title(",
     "void TitlePropertiesPanel::load_values("
+)
+
+$TitleDockSource = Join-Path $ScriptDir "src\title-dock.cpp"
+Assert-UniqueSourceDefinition -File $TitleDockSource -Definitions @(
+    "void TitleDock::select_title(",
+    "std::shared_ptr<Title> TitleDock::create_template_title(",
+    "void TitleDock::create_title_from_template("
 )
 
 # 1. Verify CMake and Visual Studio
