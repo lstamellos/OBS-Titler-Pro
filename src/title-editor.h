@@ -72,6 +72,7 @@ signals:
 public slots:
     /* Transport */
     void play_pause();
+    void play_full_loop();
     void rewind();
     void step_forward();
     void previous_keyframe();
@@ -107,6 +108,7 @@ private:
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
     bool                   playback_reverse_ = false;
+    bool                   full_loop_playback_ = false;
     QTimer                *play_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
 
@@ -121,6 +123,7 @@ private:
 
     QToolBar        *toolbar_   = nullptr;
     QAction         *act_play_  = nullptr;
+    QAction         *act_full_loop_ = nullptr;
     QAction         *act_rew_   = nullptr;
     QAction         *act_prev_kf_ = nullptr;
     QAction         *act_next_kf_ = nullptr;
@@ -161,7 +164,7 @@ protected:
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
-    enum class DragMode { None, Move, ResizeNW, ResizeNE, ResizeSW, ResizeSE, Origin };
+    enum class DragMode { None, Move, ResizeNW, ResizeN, ResizeNE, ResizeE, ResizeSE, ResizeS, ResizeSW, ResizeW, Origin };
 
     void render_to_pixmap();
     std::shared_ptr<Layer> selected_layer() const;

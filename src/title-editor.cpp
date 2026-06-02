@@ -578,6 +578,7 @@ void TitleEditor::build_ui()
     layer_transport->addAction(act_rew_);
     layer_transport->addAction(act_prev_kf_);
     layer_transport->addAction(act_play_);
+    layer_transport->addAction(act_full_loop_);
     layer_transport->addAction("▶|", this, &TitleEditor::step_forward);
     layer_transport->addAction(act_next_kf_);
     layers_layout->addWidget(layer_transport);
@@ -871,11 +872,14 @@ void TitleEditor::build_toolbar()
     act_rew_ = new QAction(obs_icon(this, {"media-skip-backward", "go-first"}, QStyle::SP_MediaSkipBackward), "⏮", this);
     act_prev_kf_ = new QAction(obs_icon(this, {"go-previous", "media-seek-backward"}, QStyle::SP_MediaSeekBackward), "◆◀", this);
     act_play_ = new QAction(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay), "▶", this);
+    act_full_loop_ = new QAction(obs_icon(this, {"media-playlist-repeat", "view-refresh"}, QStyle::SP_BrowserReload), "↻", this);
+    act_full_loop_->setToolTip("Loop preview from beginning to end of the title");
     act_next_kf_ = new QAction(obs_icon(this, {"go-next", "media-seek-forward"}, QStyle::SP_MediaSeekForward), "▶◆", this);
 
     connect(act_rew_, &QAction::triggered, this, &TitleEditor::rewind);
     connect(act_prev_kf_, &QAction::triggered, this, &TitleEditor::previous_keyframe);
     connect(act_play_, &QAction::triggered, this, &TitleEditor::play_pause);
+    connect(act_full_loop_, &QAction::triggered, this, &TitleEditor::play_full_loop);
     connect(act_next_kf_, &QAction::triggered, this, &TitleEditor::next_keyframe);
 
     time_lbl_ = new QLabel("0.000 s", toolbar_);
@@ -991,6 +995,7 @@ void TitleEditor::open_title(const std::string &tid)
     act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
     playhead_ = 0.0;
     playback_reverse_ = false;
+    full_loop_playback_ = false;
 
     title_ = TitleDataStore::instance().get_title(tid);
     if (!title_) return;
@@ -1099,6 +1104,8 @@ void TitleEditor::update_title_bar()
 void TitleEditor::play_pause()
 {
     if (!title_) return;
+    if (!playing_)
+        full_loop_playback_ = false;
     playing_ = !playing_;
     if (playing_) {
         if (title_->playback_mode != 2 && playhead_ >= title_->duration)
@@ -1116,8 +1123,23 @@ void TitleEditor::play_pause()
     }
 }
 
+void TitleEditor::play_full_loop()
+{
+    if (!title_) return;
+    full_loop_playback_ = true;
+    playback_reverse_ = false;
+    if (!playing_ || playhead_ >= title_->duration)
+        on_playhead_changed(0.0);
+    playing_ = true;
+    act_play_->setText("⏸");
+    act_play_->setIcon(obs_icon(this, {"media-playback-pause"}, QStyle::SP_MediaPause));
+    playback_clock_.restart();
+    play_timer_->start();
+}
+
 void TitleEditor::rewind()
 {
+    full_loop_playback_ = false;
     playback_reverse_ = false;
     on_playhead_changed(0.0);
 }
@@ -1182,44 +1204,56 @@ void TitleEditor::tick()
     if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
 
     double duration = std::max(0.001, title_->duration);
+    double loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
+    double loop_end = std::clamp(title_->loop_end, loop_start, title_->duration);
+    double loop_len = std::max(0.001, loop_end - loop_start);
     double t = playhead_;
-    switch (title_->playback_mode) {
-    case 1: /* Loop in/out */
-        if (title_->loop_type == 1) {
-            t += (playback_reverse_ ? -dt : dt);
-            if (t >= duration) {
-                t = duration - std::fmod(t - duration, duration);
-                playback_reverse_ = true;
-            } else if (t <= 0.0) {
-                t = std::fmod(-t, duration);
-                playback_reverse_ = false;
+
+    if (full_loop_playback_) {
+        t = std::fmod(playhead_ + dt, duration);
+    } else {
+        switch (title_->playback_mode) {
+        case 1: /* Loop in/out between Loop Start and Loop End */
+            if (loop_end <= loop_start + 0.0001) {
+                t = std::fmod(playhead_ + dt, duration);
+            } else if (title_->loop_type == 1) {
+                t += (playback_reverse_ ? -dt : dt);
+                if (!playback_reverse_ && t >= loop_end) {
+                    t = loop_end - std::fmod(t - loop_end, loop_len);
+                    playback_reverse_ = true;
+                } else if (playback_reverse_ && t <= loop_start) {
+                    t = loop_start + std::fmod(loop_start - t, loop_len);
+                    playback_reverse_ = false;
+                }
+            } else {
+                t = playhead_ + dt;
+                if (t >= loop_end)
+                    t = loop_start + std::fmod(t - loop_end, loop_len);
             }
-        } else {
-            t = std::fmod(playhead_ + dt, duration);
+            break;
+        case 2: { /* Pause at timeline position */
+            double pause_time = std::clamp(title_->pause_time, 0.0, title_->duration);
+            t = playhead_ + dt;
+            if (t >= pause_time) {
+                t = pause_time;
+                playing_ = false;
+                play_timer_->stop();
+                act_play_->setText("▶");
+                act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
+            }
+            break;
         }
-        break;
-    case 2: { /* Pause at timeline position */
-        double pause_time = std::clamp(title_->pause_time, 0.0, title_->duration);
-        t = playhead_ + dt;
-        if (t >= pause_time) {
-            t = pause_time;
-            playing_ = false;
-            play_timer_->stop();
-            act_play_->setText("▶");
-            act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
+        default: /* Play once */
+            t = playhead_ + dt;
+            if (t >= title_->duration) {
+                t = title_->duration;
+                playing_ = false;
+                play_timer_->stop();
+                act_play_->setText("▶");
+                act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
+            }
+            break;
         }
-        break;
-    }
-    default: /* Play once */
-        t = playhead_ + dt;
-        if (t >= title_->duration) {
-            t = title_->duration;
-            playing_ = false;
-            play_timer_->stop();
-            act_play_->setText("▶");
-            act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
-        }
-        break;
     }
     on_playhead_changed(snap_to_obs_frame(t));
 }
@@ -1423,9 +1457,13 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
     };
 
     if (near_pt(r.topLeft())) return DragMode::ResizeNW;
+    if (near_pt(QPointF(r.center().x(), r.top()))) return DragMode::ResizeN;
     if (near_pt(r.topRight())) return DragMode::ResizeNE;
-    if (near_pt(r.bottomLeft())) return DragMode::ResizeSW;
+    if (near_pt(QPointF(r.right(), r.center().y()))) return DragMode::ResizeE;
     if (near_pt(r.bottomRight())) return DragMode::ResizeSE;
+    if (near_pt(QPointF(r.center().x(), r.bottom()))) return DragMode::ResizeS;
+    if (near_pt(r.bottomLeft())) return DragMode::ResizeSW;
+    if (near_pt(QPointF(r.left(), r.center().y()))) return DragMode::ResizeW;
     if (std::hypot(local.x(), local.y()) <= handle * 1.25) return DragMode::Origin;
     if (r.adjusted(-handle, -handle, handle, handle).contains(local)) return DragMode::Move;
     return DragMode::None;
@@ -1466,14 +1504,19 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         double top = -drag_start_origin_y_ * drag_start_h_;
         double bottom = (1.0 - drag_start_origin_y_) * drag_start_h_;
 
-        if (drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeSW)
+        bool resize_left = drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeSW || drag_mode_ == DragMode::ResizeW;
+        bool resize_right = drag_mode_ == DragMode::ResizeNE || drag_mode_ == DragMode::ResizeSE || drag_mode_ == DragMode::ResizeE;
+        bool resize_top = drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeNE || drag_mode_ == DragMode::ResizeN;
+        bool resize_bottom = drag_mode_ == DragMode::ResizeSW || drag_mode_ == DragMode::ResizeSE || drag_mode_ == DragMode::ResizeS;
+
+        if (resize_left)
             left = std::min(local.x(), right - 1.0);
-        else
+        else if (resize_right)
             right = std::max(local.x(), left + 1.0);
 
-        if (drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeNE)
+        if (resize_top)
             top = std::min(local.y(), bottom - 1.0);
-        else
+        else if (resize_bottom)
             bottom = std::max(local.y(), top + 1.0);
 
         double new_w = std::max(1.0, right - left);
@@ -1678,7 +1721,13 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     p.setPen(QPen(QColor(0, 120, 255, 255), 1.0 / scale));
     p.setBrush(QColor(255, 255, 255));
-    for (const QPointF &pt : {box.topLeft(), box.topRight(), box.bottomLeft(), box.bottomRight()})
+    const QPointF handle_points[] = {
+        box.topLeft(), QPointF(box.center().x(), box.top()), box.topRight(),
+        QPointF(box.right(), box.center().y()), box.bottomRight(),
+        QPointF(box.center().x(), box.bottom()), box.bottomLeft(),
+        QPointF(box.left(), box.center().y())
+    };
+    for (const QPointF &pt : handle_points)
         p.drawRect(QRectF(pt.x() - handle / 2.0, pt.y() - handle / 2.0, handle, handle));
 
     p.setPen(QPen(QColor(255, 160, 0), 1.5 / scale));
@@ -1721,7 +1770,15 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     drag_start_h_ = std::max(1.0f, layer->rect_height);
     drag_start_origin_x_ = layer->origin_x;
     drag_start_origin_y_ = layer->origin_y;
-    setCursor(drag_mode_ == DragMode::Move ? Qt::ClosedHandCursor : Qt::SizeFDiagCursor);
+    auto cursor_for_mode = [](DragMode mode) {
+        if (mode == DragMode::Move) return Qt::ClosedHandCursor;
+        if (mode == DragMode::Origin) return Qt::CrossCursor;
+        if (mode == DragMode::ResizeN || mode == DragMode::ResizeS) return Qt::SizeVerCursor;
+        if (mode == DragMode::ResizeE || mode == DragMode::ResizeW) return Qt::SizeHorCursor;
+        if (mode == DragMode::ResizeNE || mode == DragMode::ResizeSW) return Qt::SizeBDiagCursor;
+        return Qt::SizeFDiagCursor;
+    };
+    setCursor(cursor_for_mode(drag_mode_));
     ev->accept();
 }
 
@@ -1736,6 +1793,9 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     DragMode mode = hit_test_selected(ev->pos());
     if (mode == DragMode::Move) setCursor(Qt::OpenHandCursor);
     else if (mode == DragMode::Origin) setCursor(Qt::CrossCursor);
+    else if (mode == DragMode::ResizeN || mode == DragMode::ResizeS) setCursor(Qt::SizeVerCursor);
+    else if (mode == DragMode::ResizeE || mode == DragMode::ResizeW) setCursor(Qt::SizeHorCursor);
+    else if (mode == DragMode::ResizeNE || mode == DragMode::ResizeSW) setCursor(Qt::SizeBDiagCursor);
     else if (mode != DragMode::None) setCursor(Qt::SizeFDiagCursor);
     else unsetCursor();
 }

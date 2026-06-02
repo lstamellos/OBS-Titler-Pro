@@ -591,16 +591,20 @@ static void source_video_tick(void *priv, float seconds)
             data->playback_reverse = false;
         } else if (data->cue_phase == TitleSourceData::CuePhase::FreeRun) {
             if (title->playback_mode == 1) {
-                if (title->loop_type == 1) {
-                    if (data->playhead >= title->duration) {
-                        data->playhead = title->duration - std::fmod(data->playhead - title->duration, duration);
+                double loop_len = std::max(0.001, loop_end - loop_start);
+                if (loop_end <= loop_start + 0.0001) {
+                    if (data->playhead >= title->duration)
+                        data->playhead = std::fmod(data->playhead, duration);
+                } else if (title->loop_type == 1) {
+                    if (!data->playback_reverse && data->playhead >= loop_end) {
+                        data->playhead = loop_end - std::fmod(data->playhead - loop_end, loop_len);
                         data->playback_reverse = true;
-                    } else if (data->playhead <= 0.0) {
-                        data->playhead = std::fmod(-data->playhead, duration);
+                    } else if (data->playback_reverse && data->playhead <= loop_start) {
+                        data->playhead = loop_start + std::fmod(loop_start - data->playhead, loop_len);
                         data->playback_reverse = false;
                     }
-                } else if (data->playhead >= title->duration) {
-                    data->playhead = std::fmod(data->playhead, duration);
+                } else if (data->playhead >= loop_end) {
+                    data->playhead = loop_start + std::fmod(data->playhead - loop_end, loop_len);
                 }
             } else if (title->playback_mode == 2) {
                 double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
