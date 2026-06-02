@@ -147,6 +147,16 @@ struct Layer {
     float       shadow_angle = 135.0f;
     float       shadow_blur = 4.0f;
     float       shadow_spread = 0.0f;
+    AnimatedProperty shadow_enabled_prop { "shadow_enabled", 0.0 };
+    AnimatedProperty shadow_opacity_prop { "shadow_opacity", 0.6 };
+    AnimatedProperty shadow_distance_prop { "shadow_distance", 8.0 };
+    AnimatedProperty shadow_angle_prop { "shadow_angle", 135.0 };
+    AnimatedProperty shadow_blur_prop { "shadow_blur", 4.0 };
+    AnimatedProperty shadow_spread_prop { "shadow_spread", 0.0 };
+    AnimatedProperty shadow_color_a { "shadow_color_a", 153.0 };
+    AnimatedProperty shadow_color_r { "shadow_color_r", 0.0 };
+    AnimatedProperty shadow_color_g { "shadow_color_g", 0.0 };
+    AnimatedProperty shadow_color_b { "shadow_color_b", 0.0 };
 
     /* ----- Keyframable color channels, 0-255 ARGB. */
     AnimatedProperty text_color_a { "text_color_a", 255.0 };

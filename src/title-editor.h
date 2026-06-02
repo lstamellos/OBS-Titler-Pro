@@ -386,6 +386,13 @@ private:
     QDoubleSpinBox  *spn_shadow_angle_ = nullptr;
     QDoubleSpinBox  *spn_shadow_blur_ = nullptr;
     QDoubleSpinBox  *spn_shadow_spread_ = nullptr;
+    QPushButton     *btn_kf_shadow_enabled_ = nullptr;
+    QPushButton     *btn_kf_shadow_color_ = nullptr;
+    QPushButton     *btn_kf_shadow_opacity_ = nullptr;
+    QPushButton     *btn_kf_shadow_distance_ = nullptr;
+    QPushButton     *btn_kf_shadow_angle_ = nullptr;
+    QPushButton     *btn_kf_shadow_blur_ = nullptr;
+    QPushButton     *btn_kf_shadow_spread_ = nullptr;
     QPushButton     *btn_kf_pos_x_ = nullptr;
     QPushButton     *btn_kf_pos_y_ = nullptr;
     QPushButton     *btn_kf_rotation_ = nullptr;

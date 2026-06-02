@@ -181,13 +181,6 @@ static QPointF rotated_scaled_delta(double dx, double dy, double rot_deg, double
     return QPointF(x * c - y * s, x * s + y * c);
 }
 
-static QPointF shadow_offset(const Layer &layer)
-{
-    double radians = layer.shadow_angle * 3.14159265358979323846 / 180.0;
-    return QPointF(std::cos(radians) * layer.shadow_distance,
-                   std::sin(radians) * layer.shadow_distance);
-}
-
 
 static double eval_box_width(const Layer &layer, double t)
 {
@@ -241,6 +234,53 @@ static uint32_t eval_fill_color(const Layer &layer, double t)
            (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
 }
 
+static bool eval_shadow_enabled(const Layer &layer, double t)
+{
+    return layer.shadow_enabled_prop.is_animated()
+        ? layer.shadow_enabled_prop.evaluate(t) >= 0.5
+        : layer.shadow_enabled;
+}
+
+static double eval_shadow_opacity(const Layer &layer, double t)
+{
+    return std::clamp(layer.shadow_opacity_prop.is_animated() ? layer.shadow_opacity_prop.evaluate(t) : (double)layer.shadow_opacity, 0.0, 1.0);
+}
+
+static double eval_shadow_distance(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_distance_prop.is_animated() ? layer.shadow_distance_prop.evaluate(t) : (double)layer.shadow_distance);
+}
+
+static double eval_shadow_angle(const Layer &layer, double t)
+{
+    return layer.shadow_angle_prop.is_animated() ? layer.shadow_angle_prop.evaluate(t) : (double)layer.shadow_angle;
+}
+
+static double eval_shadow_blur(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_blur_prop.is_animated() ? layer.shadow_blur_prop.evaluate(t) : (double)layer.shadow_blur);
+}
+
+static double eval_shadow_spread(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_spread_prop.is_animated() ? layer.shadow_spread_prop.evaluate(t) : (double)layer.shadow_spread);
+}
+
+static uint32_t eval_shadow_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.shadow_color_a, (layer.shadow_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.shadow_color_r, (layer.shadow_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.shadow_color_g, (layer.shadow_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.shadow_color_b, layer.shadow_color & 0xFF, t);
+}
+
+static QPointF shadow_offset(const Layer &layer, double t)
+{
+    double radians = eval_shadow_angle(layer, t) * 3.14159265358979323846 / 180.0;
+    double distance = eval_shadow_distance(layer, t);
+    return QPointF(std::cos(radians) * distance, std::sin(radians) * distance);
+}
+
 static void set_channel_statics(Layer &layer, bool text, uint32_t argb)
 {
     auto &a = text ? layer.text_color_a : layer.fill_color_a;
@@ -291,6 +331,14 @@ static void set_color_channels_at(Layer &layer, bool text, double time, uint32_t
     set_animated_value(r, time, (argb >> 16) & 0xFF);
     set_animated_value(g, time, (argb >> 8) & 0xFF);
     set_animated_value(b, time, argb & 0xFF);
+}
+
+static void set_shadow_color_channels_at(Layer &layer, double time, uint32_t argb)
+{
+    set_animated_value(layer.shadow_color_a, time, (argb >> 24) & 0xFF);
+    set_animated_value(layer.shadow_color_r, time, (argb >> 16) & 0xFF);
+    set_animated_value(layer.shadow_color_g, time, (argb >> 8) & 0xFF);
+    set_animated_value(layer.shadow_color_b, time, argb & 0xFF);
 }
 
 static bool keyframe_at_time(const AnimatedProperty &prop, double time)
@@ -365,7 +413,12 @@ static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
             &layer.text_color_a, &layer.text_color_r,
             &layer.text_color_g, &layer.text_color_b,
             &layer.fill_color_a, &layer.fill_color_r,
-            &layer.fill_color_g, &layer.fill_color_b};
+            &layer.fill_color_g, &layer.fill_color_b,
+            &layer.shadow_enabled_prop, &layer.shadow_opacity_prop,
+            &layer.shadow_distance_prop, &layer.shadow_angle_prop,
+            &layer.shadow_blur_prop, &layer.shadow_spread_prop,
+            &layer.shadow_color_a, &layer.shadow_color_r,
+            &layer.shadow_color_g, &layer.shadow_color_b};
 }
 
 static QString property_label(const std::string &name)
@@ -378,6 +431,14 @@ static QString property_label(const std::string &name)
         name == "text_color_g" || name == "text_color_b") return "Text Color";
     if (name == "fill_color_a" || name == "fill_color_r" ||
         name == "fill_color_g" || name == "fill_color_b") return "Fill Color";
+    if (name == "shadow_color_a" || name == "shadow_color_r" ||
+        name == "shadow_color_g" || name == "shadow_color_b") return "Shadow Color";
+    if (name == "shadow_enabled") return "Shadow Enable";
+    if (name == "shadow_opacity") return "Shadow Opacity";
+    if (name == "shadow_distance") return "Shadow Distance";
+    if (name == "shadow_angle") return "Shadow Angle";
+    if (name == "shadow_blur") return "Shadow Blur";
+    if (name == "shadow_spread") return "Shadow Spread";
     if (name == "rotation") return "Rotation";
     if (name == "opacity") return "Opacity";
     return QString::fromStdString(name);
@@ -398,8 +459,9 @@ static QString property_value_text(const AnimatedProperty &prop, const Layer &la
     if (prop.name == "origin_x")
         return QString("%1,%2").arg(layer.origin_x_prop.static_value, 0, 'f', 2)
                                 .arg(layer.origin_y_prop.static_value, 0, 'f', 2);
-    if (prop.name == "opacity") value *= 100.0;
-    return QString::number(value, 'f', prop.name == "opacity" ? 1 : 2);
+    if (prop.name == "opacity" || prop.name == "shadow_opacity") value *= 100.0;
+    if (prop.name == "shadow_enabled") return value >= 0.5 ? "On" : "Off";
+    return QString::number(value, 'f', (prop.name == "opacity" || prop.name == "shadow_opacity") ? 1 : 2);
 }
 
 struct TimelineRow {
@@ -1421,14 +1483,25 @@ void CanvasPreview::render_to_pixmap()
 
         if (layer->type == LayerType::SolidRect) {
             QColor fc = color_from_argb(eval_fill_color(*layer, lt));
-            if (layer->shadow_enabled) {
-                QColor sc = color_from_argb(layer->shadow_color);
-                sc.setAlphaF(std::clamp((double)sc.alphaF() * layer->shadow_opacity, 0.0, 1.0));
-                QRectF shadow_box = box.translated(shadow_offset(*layer));
-                p.setBrush(sc);
-                p.setPen(Qt::NoPen);
-                if (layer->corner_radius > 0) p.drawRoundedRect(shadow_box, layer->corner_radius, layer->corner_radius);
-                else p.drawRect(shadow_box);
+            if (eval_shadow_enabled(*layer, lt)) {
+                QColor sc = color_from_argb(eval_shadow_color(*layer, lt));
+                sc.setAlphaF(std::clamp((double)sc.alphaF() * eval_shadow_opacity(*layer, lt), 0.0, 1.0));
+                QPointF off = shadow_offset(*layer, lt);
+                double blur = eval_shadow_blur(*layer, lt);
+                double spread = eval_shadow_spread(*layer, lt);
+                int passes = std::max(1, (int)std::ceil(blur / 3.0));
+                for (int pass = passes; pass >= 1; --pass) {
+                    QColor pass_color = sc;
+                    pass_color.setAlphaF(sc.alphaF() / passes);
+                    double radius = blur * pass / passes;
+                    QRectF shadow_box = box.adjusted(-spread - radius, -spread - radius,
+                                                     spread + radius, spread + radius).translated(off);
+                    p.setBrush(pass_color);
+                    p.setPen(Qt::NoPen);
+                    double corner = std::max(0.0, layer->corner_radius + spread + radius);
+                    if (corner > 0) p.drawRoundedRect(shadow_box, corner, corner);
+                    else p.drawRect(shadow_box);
+                }
             }
             if (layer->corner_radius > 0) {
                 p.setBrush(fc);
@@ -1458,17 +1531,29 @@ void CanvasPreview::render_to_pixmap()
             f.setBold(layer->font_bold);
             f.setItalic(layer->font_italic);
             p.setFont(f);
-            if (layer->shadow_enabled) {
-                QColor sc = color_from_argb(layer->shadow_color);
-                sc.setAlphaF(std::clamp((double)sc.alphaF() * layer->shadow_opacity, 0.0, 1.0));
+            if (eval_shadow_enabled(*layer, lt)) {
+                QColor sc = color_from_argb(eval_shadow_color(*layer, lt));
+                sc.setAlphaF(std::clamp((double)sc.alphaF() * eval_shadow_opacity(*layer, lt), 0.0, 1.0));
                 Qt::AlignmentFlag sha = Qt::AlignHCenter;
                 if (layer->align_h == 0) sha = Qt::AlignLeft;
                 if (layer->align_h == 2) sha = Qt::AlignRight;
                 Qt::AlignmentFlag sva = Qt::AlignVCenter;
                 if (layer->align_v == 0) sva = Qt::AlignTop;
                 if (layer->align_v == 2) sva = Qt::AlignBottom;
+                QPointF off = shadow_offset(*layer, lt);
+                double blur = eval_shadow_blur(*layer, lt);
+                double spread = eval_shadow_spread(*layer, lt);
+                int passes = std::max(1, (int)std::ceil(blur / 3.0));
                 p.setPen(sc);
-                p.drawText(box.translated(shadow_offset(*layer)), sha | sva, QString::fromStdString(layer->text_content));
+                for (int pass = passes; pass >= 1; --pass) {
+                    QColor pass_color = sc;
+                    pass_color.setAlphaF(sc.alphaF() / passes);
+                    p.setPen(pass_color);
+                    double radius = blur * pass / passes;
+                    for (double dx : {-spread - radius, 0.0, spread + radius})
+                        for (double dy : {-spread - radius, 0.0, spread + radius})
+                            p.drawText(box.translated(off + QPointF(dx, dy)), sha | sva, QString::fromStdString(layer->text_content));
+                }
             }
             p.setPen(tc);
             Qt::AlignmentFlag ha = Qt::AlignHCenter;
@@ -2732,14 +2817,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_shadow_angle_ = mk_dspin(-360.0, 360.0, 5.0);
     spn_shadow_blur_ = mk_dspin(0.0, 100.0, 1.0);
     spn_shadow_spread_ = mk_dspin(0.0, 100.0, 1.0);
-    sfl->addRow("", chk_shadow_enabled_);
+    btn_kf_shadow_enabled_ = mk_kf_button("Toggle shadow enabled keyframe");
+    btn_kf_shadow_color_ = mk_kf_button("Toggle shadow color keyframe");
+    btn_kf_shadow_opacity_ = mk_kf_button("Toggle shadow opacity keyframe");
+    btn_kf_shadow_distance_ = mk_kf_button("Toggle shadow distance keyframe");
+    btn_kf_shadow_angle_ = mk_kf_button("Toggle shadow angle keyframe");
+    btn_kf_shadow_blur_ = mk_kf_button("Toggle shadow blur keyframe");
+    btn_kf_shadow_spread_ = mk_kf_button("Toggle shadow spread keyframe");
+    sfl->addRow("", with_kf(chk_shadow_enabled_, btn_kf_shadow_enabled_));
     sfl->addRow("Preset:", cmb_shadow_preset_);
-    sfl->addRow("Color:", btn_shadow_color_);
-    sfl->addRow("Opacity:", spn_shadow_opacity_);
-    sfl->addRow("Distance:", spn_shadow_distance_);
-    sfl->addRow("Angle:", spn_shadow_angle_);
-    sfl->addRow("Blur:", spn_shadow_blur_);
-    sfl->addRow("Spread:", spn_shadow_spread_);
+    sfl->addRow("Color:", with_kf(btn_shadow_color_, btn_kf_shadow_color_));
+    sfl->addRow("Opacity:", with_kf(spn_shadow_opacity_, btn_kf_shadow_opacity_));
+    sfl->addRow("Distance:", with_kf(spn_shadow_distance_, btn_kf_shadow_distance_));
+    sfl->addRow("Angle:", with_kf(spn_shadow_angle_, btn_kf_shadow_angle_));
+    sfl->addRow("Blur:", with_kf(spn_shadow_blur_, btn_kf_shadow_blur_));
+    sfl->addRow("Spread:", with_kf(spn_shadow_spread_, btn_kf_shadow_spread_));
     vl->addWidget(shadow_box_);
 
     vl->addStretch();
@@ -2838,42 +2930,81 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 style_color_button(btn_text_color_, layer_->text_color);
                 emit_change();
             });
-    connect(chk_shadow_enabled_, &QCheckBox::toggled, this, [this, can_edit, emit_change](bool v) {
-        if (can_edit()) { layer_->shadow_enabled = v; emit_change(); }
+    connect(chk_shadow_enabled_, &QCheckBox::toggled, this, [this, can_edit, local_time, emit_change](bool v) {
+        if (can_edit()) {
+            layer_->shadow_enabled = v;
+            set_animated_value(layer_->shadow_enabled_prop, local_time(), v ? 1.0 : 0.0);
+            emit_change();
+        }
     });
-    connect(cmb_shadow_preset_, QOverload<int>::of(&QComboBox::activated), this, [this, can_edit, emit_change](int idx) {
+    connect(cmb_shadow_preset_, QOverload<int>::of(&QComboBox::activated), this, [this, can_edit, local_time, emit_change](int idx) {
         if (!can_edit() || idx <= 0) return;
-        static const struct { float opacity, distance, blur; uint32_t color; } presets[] = {
-            {0.35f, 5.0f, 8.0f, 0x99000000}, {0.55f, 8.0f, 5.0f, 0xAA000000},
-            {0.75f, 12.0f, 3.0f, 0xCC000000}, {0.65f, 10.0f, 4.0f, 0xCC001428},
+        static const struct { float opacity, distance, blur, spread, angle; uint32_t color; } presets[] = {
+            {0.35f, 5.0f, 8.0f, 1.0f, 135.0f, 0x99000000}, {0.55f, 8.0f, 5.0f, 2.0f, 135.0f, 0xAA000000},
+            {0.75f, 12.0f, 3.0f, 3.0f, 135.0f, 0xCC000000}, {0.65f, 10.0f, 4.0f, 4.0f, 135.0f, 0xCC001428},
         };
         const auto &p = presets[std::clamp(idx - 1, 0, 3)];
-        layer_->shadow_enabled = true; layer_->shadow_opacity = p.opacity; layer_->shadow_distance = p.distance;
-        layer_->shadow_blur = p.blur; layer_->shadow_color = p.color;
+        double t = local_time();
+        layer_->shadow_enabled = true;
+        layer_->shadow_opacity = p.opacity;
+        layer_->shadow_distance = p.distance;
+        layer_->shadow_blur = p.blur;
+        layer_->shadow_spread = p.spread;
+        layer_->shadow_angle = p.angle;
+        layer_->shadow_color = p.color;
+        set_animated_value(layer_->shadow_enabled_prop, t, 1.0);
+        set_animated_value(layer_->shadow_opacity_prop, t, p.opacity);
+        set_animated_value(layer_->shadow_distance_prop, t, p.distance);
+        set_animated_value(layer_->shadow_blur_prop, t, p.blur);
+        set_animated_value(layer_->shadow_spread_prop, t, p.spread);
+        set_animated_value(layer_->shadow_angle_prop, t, p.angle);
+        set_shadow_color_channels_at(*layer_, t, p.color);
         load_values(); emit_change();
     });
-    connect(btn_shadow_color_, &QPushButton::clicked, this, [this, can_edit, emit_change]() {
+    connect(btn_shadow_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
         if (!can_edit()) return;
-        QColor picked = QColorDialog::getColor(color_from_argb(layer_->shadow_color), this, "Shadow Color", QColorDialog::ShowAlphaChannel);
+        QColor picked = QColorDialog::getColor(color_from_argb(eval_shadow_color(*layer_, local_time())), this, "Shadow Color", QColorDialog::ShowAlphaChannel);
         if (!picked.isValid()) return;
         layer_->shadow_color = argb_from_color(picked);
+        set_shadow_color_channels_at(*layer_, local_time(), layer_->shadow_color);
         style_color_button(btn_shadow_color_, layer_->shadow_color);
         emit_change();
     });
-    auto shadow_spin_changed = [this, can_edit, emit_change](double) {
-        if (!can_edit()) return;
-        layer_->shadow_opacity = (float)spn_shadow_opacity_->value();
-        layer_->shadow_distance = (float)spn_shadow_distance_->value();
-        layer_->shadow_angle = (float)spn_shadow_angle_->value();
-        layer_->shadow_blur = (float)spn_shadow_blur_->value();
-        layer_->shadow_spread = (float)spn_shadow_spread_->value();
-        emit_change();
-    };
-    connect(spn_shadow_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
-    connect(spn_shadow_distance_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
-    connect(spn_shadow_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
-    connect(spn_shadow_blur_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
-    connect(spn_shadow_spread_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
+    connect(spn_shadow_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->shadow_opacity = (float)v;
+                set_animated_value(layer_->shadow_opacity_prop, local_time(), v);
+                emit_change();
+            });
+    connect(spn_shadow_distance_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->shadow_distance = (float)v;
+                set_animated_value(layer_->shadow_distance_prop, local_time(), v);
+                emit_change();
+            });
+    connect(spn_shadow_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->shadow_angle = (float)v;
+                set_animated_value(layer_->shadow_angle_prop, local_time(), v);
+                emit_change();
+            });
+    connect(spn_shadow_blur_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->shadow_blur = (float)v;
+                set_animated_value(layer_->shadow_blur_prop, local_time(), v);
+                emit_change();
+            });
+    connect(spn_shadow_spread_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->shadow_spread = (float)v;
+                set_animated_value(layer_->shadow_spread_prop, local_time(), v);
+                emit_change();
+            });
 
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
@@ -3019,6 +3150,62 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
+
+    connect(btn_kf_shadow_enabled_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->shadow_enabled_prop, local_time(), chk_shadow_enabled_->isChecked() ? 1.0 : 0.0);
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_shadow_opacity_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->shadow_opacity_prop, local_time(), spn_shadow_opacity_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_shadow_distance_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->shadow_distance_prop, local_time(), spn_shadow_distance_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_shadow_angle_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->shadow_angle_prop, local_time(), spn_shadow_angle_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_shadow_blur_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->shadow_blur_prop, local_time(), spn_shadow_blur_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_shadow_spread_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->shadow_spread_prop, local_time(), spn_shadow_spread_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_shadow_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        double t = local_time();
+        uint32_t color = eval_shadow_color(*layer_, t);
+        if (any_keyframe_at_time({&layer_->shadow_color_a, &layer_->shadow_color_r,
+                                  &layer_->shadow_color_g, &layer_->shadow_color_b}, t)) {
+            remove_keyframe_at(layer_->shadow_color_a, t);
+            remove_keyframe_at(layer_->shadow_color_r, t);
+            remove_keyframe_at(layer_->shadow_color_g, t);
+            remove_keyframe_at(layer_->shadow_color_b, t);
+        } else {
+            add_or_replace_keyframe(layer_->shadow_color_a, t, (color >> 24) & 0xFF);
+            add_or_replace_keyframe(layer_->shadow_color_r, t, (color >> 16) & 0xFF);
+            add_or_replace_keyframe(layer_->shadow_color_g, t, (color >> 8) & 0xFF);
+            add_or_replace_keyframe(layer_->shadow_color_b, t, color & 0xFF);
+        }
+        load_values();
+        emit_change();
+    });
     connect(btn_kf_fill_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
         if (!can_edit()) return;
         double t = local_time();
@@ -3156,6 +3343,14 @@ void PropertiesPanel::load_values()
                                                           &layer_->text_color_g, &layer_->text_color_b}, lt));
     set_kf_icon(btn_kf_fill_color_, any_keyframe_at_time({&layer_->fill_color_a, &layer_->fill_color_r,
                                                           &layer_->fill_color_g, &layer_->fill_color_b}, lt));
+    set_kf_icon(btn_kf_shadow_enabled_, keyframe_at_time(layer_->shadow_enabled_prop, lt));
+    set_kf_icon(btn_kf_shadow_opacity_, keyframe_at_time(layer_->shadow_opacity_prop, lt));
+    set_kf_icon(btn_kf_shadow_distance_, keyframe_at_time(layer_->shadow_distance_prop, lt));
+    set_kf_icon(btn_kf_shadow_angle_, keyframe_at_time(layer_->shadow_angle_prop, lt));
+    set_kf_icon(btn_kf_shadow_blur_, keyframe_at_time(layer_->shadow_blur_prop, lt));
+    set_kf_icon(btn_kf_shadow_spread_, keyframe_at_time(layer_->shadow_spread_prop, lt));
+    set_kf_icon(btn_kf_shadow_color_, any_keyframe_at_time({&layer_->shadow_color_a, &layer_->shadow_color_r,
+                                                            &layer_->shadow_color_g, &layer_->shadow_color_b}, lt));
 
     txt_content_->setText(QString::fromStdString(layer_->text_content));
     int fi = cmb_font_->findText(QString::fromStdString(layer_->font_family));
@@ -3167,14 +3362,14 @@ void PropertiesPanel::load_values()
     int ai = cmb_text_align_->findData(layer_->align_h);
     cmb_text_align_->setCurrentIndex(ai >= 0 ? ai : 1);
 
-    chk_shadow_enabled_->setChecked(layer_->shadow_enabled);
+    chk_shadow_enabled_->setChecked(eval_shadow_enabled(*layer_, lt));
     cmb_shadow_preset_->setCurrentIndex(0);
-    style_color_button(btn_shadow_color_, layer_->shadow_color);
-    spn_shadow_opacity_->setValue(layer_->shadow_opacity);
-    spn_shadow_distance_->setValue(layer_->shadow_distance);
-    spn_shadow_angle_->setValue(layer_->shadow_angle);
-    spn_shadow_blur_->setValue(layer_->shadow_blur);
-    spn_shadow_spread_->setValue(layer_->shadow_spread);
+    style_color_button(btn_shadow_color_, eval_shadow_color(*layer_, lt));
+    spn_shadow_opacity_->setValue(eval_shadow_opacity(*layer_, lt));
+    spn_shadow_distance_->setValue(eval_shadow_distance(*layer_, lt));
+    spn_shadow_angle_->setValue(eval_shadow_angle(*layer_, lt));
+    spn_shadow_blur_->setValue(eval_shadow_blur(*layer_, lt));
+    spn_shadow_spread_->setValue(eval_shadow_spread(*layer_, lt));
 
     QFontDatabase fdb;
     cmb_font_->setToolTip(fdb.families().contains(QString::fromStdString(layer_->font_family))

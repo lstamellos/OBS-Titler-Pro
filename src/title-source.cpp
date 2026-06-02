@@ -158,11 +158,52 @@ static uint32_t eval_fill_color(const Layer &layer, double t)
            (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
 }
 
-static QPointF shadow_offset(const Layer &layer)
+static bool eval_shadow_enabled(const Layer &layer, double t)
 {
-    double radians = layer.shadow_angle * kPi / 180.0;
-    return QPointF(std::cos(radians) * layer.shadow_distance,
-                   std::sin(radians) * layer.shadow_distance);
+    return layer.shadow_enabled_prop.is_animated()
+        ? layer.shadow_enabled_prop.evaluate(t) >= 0.5
+        : layer.shadow_enabled;
+}
+
+static double eval_shadow_opacity(const Layer &layer, double t)
+{
+    return std::clamp(layer.shadow_opacity_prop.is_animated() ? layer.shadow_opacity_prop.evaluate(t) : (double)layer.shadow_opacity, 0.0, 1.0);
+}
+
+static double eval_shadow_distance(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_distance_prop.is_animated() ? layer.shadow_distance_prop.evaluate(t) : (double)layer.shadow_distance);
+}
+
+static double eval_shadow_angle(const Layer &layer, double t)
+{
+    return layer.shadow_angle_prop.is_animated() ? layer.shadow_angle_prop.evaluate(t) : (double)layer.shadow_angle;
+}
+
+static double eval_shadow_blur(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_blur_prop.is_animated() ? layer.shadow_blur_prop.evaluate(t) : (double)layer.shadow_blur);
+}
+
+static double eval_shadow_spread(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_spread_prop.is_animated() ? layer.shadow_spread_prop.evaluate(t) : (double)layer.shadow_spread);
+}
+
+static uint32_t eval_shadow_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.shadow_color_a, (layer.shadow_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.shadow_color_r, (layer.shadow_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.shadow_color_g, (layer.shadow_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.shadow_color_b, layer.shadow_color & 0xFF, t);
+}
+
+static QPointF shadow_offset(const Layer &layer, double t)
+{
+    double radians = eval_shadow_angle(layer, t) * kPi / 180.0;
+    double distance = eval_shadow_distance(layer, t);
+    return QPointF(std::cos(radians) * distance,
+                   std::sin(radians) * distance);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -191,8 +232,14 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     double box_w = std::max(1.0, eval_box_width(layer, t));
     double box_h = std::max(1.0, eval_box_height(layer, t));
 
-    int img_w = std::max(1, (int)std::ceil(box_w));
-    int img_h = std::max(1, (int)std::ceil(box_h));
+    QPointF off = shadow_offset(layer, t);
+    double blur = eval_shadow_blur(layer, t);
+    double spread = eval_shadow_spread(layer, t);
+    int pad = eval_shadow_enabled(layer, t)
+        ? (int)std::ceil(std::max(std::abs(off.x()), std::abs(off.y())) + blur + spread + 4.0)
+        : 0;
+    int img_w = std::max(1, (int)std::ceil(box_w) + pad * 2);
+    int img_h = std::max(1, (int)std::ceil(box_h) + pad * 2);
     QImage text_image(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
     text_image.fill(Qt::transparent);
 
@@ -207,18 +254,26 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     font.setKerning(true);
     painter.setFont(font);
 
-    QRectF text_rect(0, 0, box_w, box_h);
+    QRectF text_rect(pad, pad, box_w, box_h);
     Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
     if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
     if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
 
-    if (layer.shadow_enabled) {
-        QColor shadow = color_from_argb(layer.shadow_color);
-        shadow.setAlphaF(std::clamp((double)shadow.alphaF() * layer.shadow_opacity, 0.0, 1.0));
-        painter.setPen(shadow);
-        painter.drawText(text_rect.translated(shadow_offset(layer)), align, QString::fromStdString(layer.text_content));
+    if (eval_shadow_enabled(layer, t)) {
+        QColor shadow = color_from_argb(eval_shadow_color(layer, t));
+        shadow.setAlphaF(std::clamp((double)shadow.alphaF() * eval_shadow_opacity(layer, t), 0.0, 1.0));
+        int passes = std::max(1, (int)std::ceil(blur / 3.0));
+        for (int pass = passes; pass >= 1; --pass) {
+            QColor pass_color = shadow;
+            pass_color.setAlphaF(shadow.alphaF() / passes);
+            painter.setPen(pass_color);
+            double radius = blur * pass / passes;
+            for (double dx : {-spread - radius, 0.0, spread + radius})
+                for (double dy : {-spread - radius, 0.0, spread + radius})
+                    painter.drawText(text_rect.translated(off + QPointF(dx, dy)), align, QString::fromStdString(layer.text_content));
+        }
     }
 
     QColor fill = color_from_argb(eval_text_color(layer, t));
@@ -235,7 +290,7 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w, -eval_origin_y(layer, t) * box_h);
+    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
 
@@ -256,6 +311,9 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     double r = std::min<double>(layer.corner_radius, std::min(w, h) / 2.0);
     double x = -eval_origin_x(layer, t) * w;
     double y = -eval_origin_y(layer, t) * h;
+    QPointF off = shadow_offset(layer, t);
+    double blur = eval_shadow_blur(layer, t);
+    double spread = eval_shadow_spread(layer, t);
 
     double fr, fg, fb, fa;
     unpack_color(eval_fill_color(layer, t), fr, fg, fb, fa);
@@ -265,6 +323,36 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
     cairo_translate(cr, x, y);
+
+    if (eval_shadow_enabled(layer, t)) {
+        double sr, sg, sb, sa;
+        unpack_color(eval_shadow_color(layer, t), sr, sg, sb, sa);
+        int passes = std::max(1, (int)std::ceil(blur / 3.0));
+        for (int pass = passes; pass >= 1; --pass) {
+            double radius = blur * pass / passes;
+            double grow = spread + radius;
+            double sx0 = -grow;
+            double sy0 = -grow;
+            double sw = w + grow * 2.0;
+            double sh = h + grow * 2.0;
+            double sradius = std::max(0.0, r + grow);
+            cairo_save(cr);
+            cairo_translate(cr, off.x(), off.y());
+            if (sradius > 0.0) {
+                cairo_new_sub_path(cr);
+                cairo_arc(cr, sx0 + sradius,      sy0 + sradius,      sradius, kPi,     3*kPi/2);
+                cairo_arc(cr, sx0 + sw - sradius, sy0 + sradius,      sradius, 3*kPi/2, 2*kPi);
+                cairo_arc(cr, sx0 + sw - sradius, sy0 + sh - sradius, sradius, 0,       kPi/2);
+                cairo_arc(cr, sx0 + sradius,      sy0 + sh - sradius, sradius, kPi/2,   kPi);
+                cairo_close_path(cr);
+            } else {
+                cairo_rectangle(cr, sx0, sy0, sw, sh);
+            }
+            cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_shadow_opacity(layer, t) / passes);
+            cairo_fill(cr);
+            cairo_restore(cr);
+        }
+    }
 
     if (r > 0.0) {
         cairo_new_sub_path(cr);
@@ -276,38 +364,6 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     } else {
         cairo_rectangle(cr, 0, 0, w, h);
     }
-
-    if (layer.shadow_enabled) {
-        double sr, sg, sb, sa;
-        unpack_color(layer.shadow_color, sr, sg, sb, sa);
-        QPointF off = shadow_offset(layer);
-        cairo_save(cr);
-        cairo_translate(cr, off.x(), off.y());
-        if (r > 0.0) {
-            cairo_new_sub_path(cr);
-            cairo_arc(cr, r,     r,     r,  kPi,       3*kPi/2);
-            cairo_arc(cr, w-r,   r,     r,  3*kPi/2,   2*kPi);
-            cairo_arc(cr, w-r,   h-r,   r,  0,          kPi/2);
-            cairo_arc(cr, r,     h-r,   r,  kPi/2,     kPi);
-            cairo_close_path(cr);
-        } else {
-            cairo_rectangle(cr, 0, 0, w, h);
-        }
-        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * layer.shadow_opacity);
-        cairo_fill(cr);
-        cairo_restore(cr);
-        if (r > 0.0) {
-            cairo_new_sub_path(cr);
-            cairo_arc(cr, r,     r,     r,  kPi,       3*kPi/2);
-            cairo_arc(cr, w-r,   r,     r,  3*kPi/2,   2*kPi);
-            cairo_arc(cr, w-r,   h-r,   r,  0,          kPi/2);
-            cairo_arc(cr, r,     h-r,   r,  kPi/2,     kPi);
-            cairo_close_path(cr);
-        } else {
-            cairo_rectangle(cr, 0, 0, w, h);
-        }
-    }
-
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
     cairo_fill(cr);
     cairo_restore(cr);
