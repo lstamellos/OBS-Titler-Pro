@@ -212,6 +212,7 @@ signals:
     void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_expand_changed(const std::string &layer_id, bool expanded);
     void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
+    void layer_name_changed(const std::string &layer_id, const std::string &name);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
     void delete_layer_requested(const std::string &layer_id);

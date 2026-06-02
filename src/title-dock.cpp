@@ -37,6 +37,15 @@ static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared
     return exposed;
 }
 
+static QString live_text_layer_header(const std::shared_ptr<Layer> &layer)
+{
+    if (!layer) return QStringLiteral("Text");
+    QString name = QString::fromStdString(layer->name).trimmed();
+    if (!name.isEmpty()) return name;
+    name = QString::fromStdString(layer->text_content).trimmed();
+    return name.isEmpty() ? QStringLiteral("Text") : name;
+}
+
 static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
                                      const std::vector<std::shared_ptr<Layer>> &exposed)
 {
@@ -339,9 +348,13 @@ void TitleDock::populate_exposed_text()
 
     QStringList headers;
     for (const auto &layer : exposed)
-        headers << QString::fromStdString(layer->name);
+        headers << live_text_layer_header(layer);
     headers << "" << "";
     text_table_->setHorizontalHeaderLabels(headers);
+    for (int col = 0; col < (int)exposed.size(); ++col) {
+        if (auto *item = text_table_->horizontalHeaderItem(col))
+            item->setToolTip(live_text_layer_header(exposed[col]));
+    }
     for (int col = 0; col < (int)exposed.size(); ++col)
         text_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
     text_table_->horizontalHeader()->setSectionResizeMode((int)exposed.size(), QHeaderView::ResizeToContents);
@@ -351,7 +364,7 @@ void TitleDock::populate_exposed_text()
         text_table_->setVerticalHeaderItem(row, new QTableWidgetItem(QString::number(row + 1)));
         for (int col = 0; col < (int)exposed.size(); ++col) {
             auto *edit = new QLineEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
-            edit->setPlaceholderText(QString::fromStdString(exposed[col]->name));
+            edit->setPlaceholderText(live_text_layer_header(exposed[col]));
             edit->setStyleSheet("QLineEdit{padding:3px;}");
             connect(edit, &QLineEdit::textEdited, this, [this, title, row, col](const QString &text) {
                 if (row < 0 || row >= (int)title->live_text_rows.size() ||

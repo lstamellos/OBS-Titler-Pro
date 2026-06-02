@@ -638,6 +638,20 @@ void TitleEditor::build_ui()
                 }
             });
 
+    connect(layers_, &LayerStack::layer_name_changed,
+            this, [this](const std::string &lid, const std::string &name) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    if (layer->name == name) return;
+                    layer->name = name.empty() ? "Layer" : name;
+                    timeline_->set_title(title_);
+                    on_title_modified();
+                    QTimer::singleShot(0, layers_, [this]() {
+                        if (layers_) layers_->refresh();
+                    });
+                }
+            });
+
     connect(timeline_, &TimelineWidget::playhead_changed,
             this, &TitleEditor::on_playhead_changed);
     connect(timeline_, &TimelineWidget::keyframe_easing_changed,
@@ -1801,9 +1815,17 @@ void LayerStack::populate()
                                 .arg(layer_color(*l, row).name()));
         hl->addWidget(type);
 
-        QLabel *name = new QLabel(QString::fromStdString(l->name), row_widget);
+        QLineEdit *name = new QLineEdit(QString::fromStdString(l->name), row_widget);
         name->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        name->setStyleSheet(l->locked ? "color:#8f8f8f;" : "color:#d0d0d0;");
+        name->setFrame(false);
+        name->setReadOnly(l->locked);
+        name->setToolTip("Rename layer");
+        name->setStyleSheet(l->locked
+            ? "QLineEdit{color:#8f8f8f;background:transparent;border:none;}"
+            : "QLineEdit{color:#d0d0d0;background:transparent;border:none;padding:1px;} QLineEdit:focus{background:#101010;border:1px solid #0078d4;border-radius:2px;}");
+        connect(name, &QLineEdit::editingFinished, this, [this, id = l->id, name]() {
+            emit layer_name_changed(id, name->text().trimmed().toStdString());
+        });
         hl->addWidget(name, 1);
 
         QLabel *mode = new QLabel("Normal", row_widget);
