@@ -32,12 +32,8 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
-#include <vector>
 #include <algorithm>
-
-namespace {
-constexpr double kPi = 3.141592653589793238462643383279502884;
-}
+#include <cctype>
 
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
@@ -339,8 +335,71 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
-    cairo_paint_with_alpha(cr, alpha);
+    cairo_set_global_alpha(cr, alpha);  /* not a real Cairo API – handled below */
+
+    /* Build Pango layout */
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+
+    /* Font */
+    PangoFontDescription *fdesc =
+        pango_font_description_from_string(layer.font_family.c_str());
+    int font_size = layer.font_size;
+    if (layer.text_superscript || layer.text_subscript)
+        font_size = std::max(1, (int)std::round(font_size * 0.65));
+    pango_font_description_set_size(fdesc,
+        font_size * PANGO_SCALE);
+    if (layer.font_bold)
+        pango_font_description_set_weight(fdesc, PANGO_WEIGHT_BOLD);
+    if (layer.font_italic)
+        pango_font_description_set_style(fdesc, PANGO_STYLE_ITALIC);
+    if (layer.text_small_caps)
+        pango_font_description_set_variant(fdesc, PANGO_VARIANT_SMALL_CAPS);
+    pango_layout_set_font_description(layout, fdesc);
+    pango_font_description_free(fdesc);
+
+    std::string display_text = layer.text_content;
+    if (layer.text_all_caps)
+        std::transform(display_text.begin(), display_text.end(), display_text.begin(),
+                       [](unsigned char ch) { return (char)std::toupper(ch); });
+    pango_layout_set_text(layout, display_text.c_str(), -1);
+    pango_layout_set_width(layout, canvas_w * PANGO_SCALE);
+
+    /* Horizontal alignment */
+    PangoAlignment palign = PANGO_ALIGN_CENTER;
+    if (layer.align_h == 0) palign = PANGO_ALIGN_LEFT;
+    if (layer.align_h == 2) palign = PANGO_ALIGN_RIGHT;
+    pango_layout_set_alignment(layout, palign);
+
+    /* Measure for vertical offset */
+    int pw, ph;
+    pango_layout_get_pixel_size(layout, &pw, &ph);
+
+    double off_y = 0.0;
+    if (layer.align_v == 1) off_y = -ph / 2.0;
+    if (layer.align_v == 2) off_y = -(double)ph;
+    if (layer.text_superscript) off_y -= ph * 0.35;
+    if (layer.text_subscript) off_y += ph * 0.35;
+    double off_x = -(double)canvas_w / 2.0;  /* layout width = canvas_w */
+
+    cairo_translate(cr, off_x, off_y);
+
+    /* Stroke */
+    if (layer.stroke_width > 0.01f) {
+        double sr, sg, sb, sa;
+        unpack_color(layer.stroke_color, sr, sg, sb, sa);
+        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha);
+        cairo_set_line_width(cr, layer.stroke_width * 2.0);
+        pango_cairo_layout_path(cr, layout);
+        cairo_stroke(cr);
+    }
+
+    /* Fill */
+    double fr, fg, fb, fa;
+    unpack_color(layer.text_color, fr, fg, fb, fa);
+    cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
+    pango_cairo_show_layout(cr, layout);
+
+    g_object_unref(layout);
     cairo_restore(cr);
 
     cairo_surface_destroy(text_surface);

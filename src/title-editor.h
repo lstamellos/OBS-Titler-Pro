@@ -32,16 +32,11 @@
 #include <QSpinBox>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QPushButton>
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QTimer>
-#include <QElapsedTimer>
-#include <QPushButton>
-#include <QLineEdit>
-#include <QSpinBox>
-#include <QPointF>
 #include <QPoint>
-#include <QRectF>
 #include <memory>
 
 /* Forward declarations for sub-widgets */
@@ -125,15 +120,6 @@ private:
     QAction         *act_play_  = nullptr;
     QAction         *act_full_loop_ = nullptr;
     QAction         *act_rew_   = nullptr;
-    QAction         *act_prev_kf_ = nullptr;
-    QAction         *act_next_kf_ = nullptr;
-    QAction         *act_safe_guides_ = nullptr;
-    QAction         *act_undo_ = nullptr;
-    QAction         *act_redo_ = nullptr;
-    int              alignment_target_ = 2; /* 0=selection, 2=artboard/canvas */
-    std::vector<std::shared_ptr<Title>> undo_stack_;
-    int              undo_index_ = -1;
-    bool             restoring_undo_ = false;
     std::shared_ptr<Layer> copied_layer_;
 };
 
@@ -209,9 +195,7 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void refresh();
-    void set_selected_layer(const std::string &layer_id);
     void set_layer_clipboard_available(bool available);
-    std::vector<std::string> selected_ids() const;
 
 signals:
     void layer_selected(const std::string &layer_id);
@@ -237,7 +221,6 @@ private slots:
 
 private:
     void populate();
-    void sync_order_from_list();
     void show_context_menu(const QPoint &pos);
     std::string selected_id() const;
 
@@ -370,31 +353,9 @@ private:
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
     QComboBox       *cmb_text_style_ = nullptr;
-    QCheckBox       *chk_all_caps_ = nullptr;
-    QCheckBox       *chk_small_caps_ = nullptr;
-    QCheckBox       *chk_superscript_ = nullptr;
-    QCheckBox       *chk_subscript_ = nullptr;
-    QCheckBox       *chk_underline_ = nullptr;
-    QCheckBox       *chk_strikeout_ = nullptr;
-    QCheckBox       *chk_expose_text_ = nullptr;
-    QComboBox       *cmb_text_align_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
     QPushButton     *btn_outline_color_ = nullptr;
     QDoubleSpinBox  *spn_outline_width_ = nullptr;
-
-    /* Rectangle/Image geometry controls */
-    QDoubleSpinBox  *spn_layer_w_   = nullptr;
-    QDoubleSpinBox  *spn_layer_h_   = nullptr;
-    QDoubleSpinBox  *spn_rect_corner_   = nullptr;
-    QPushButton     *btn_fill_color_ = nullptr;
-    QWidget         *row_fill_color_ = nullptr;
-    QPushButton     *btn_shape_outline_color_ = nullptr;
-    QDoubleSpinBox  *spn_shape_outline_width_ = nullptr;
-    QWidget         *row_shape_outline_color_ = nullptr;
-
-    /* Image controls */
-    QLineEdit       *edit_image_path_ = nullptr;
-    QPushButton     *btn_pick_image_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;
