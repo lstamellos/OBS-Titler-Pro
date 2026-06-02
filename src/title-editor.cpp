@@ -151,6 +151,41 @@ static uint32_t argb_from_color(const QColor &color)
            (uint32_t)color.blue();
 }
 
+static QPointF anchor_point_from_index(int index)
+{
+    static const QPointF anchors[] = {
+        {0.0, 0.0}, {0.5, 0.0}, {1.0, 0.0},
+        {0.0, 0.5}, {0.5, 0.5}, {1.0, 0.5},
+        {0.0, 1.0}, {0.5, 1.0}, {1.0, 1.0},
+    };
+    if (index < 0 || index >= 9) return anchors[4];
+    return anchors[index];
+}
+
+static int anchor_index_from_layer(const Layer &layer)
+{
+    int x = layer.origin_x < 0.25f ? 0 : (layer.origin_x > 0.75f ? 2 : 1);
+    int y = layer.origin_y < 0.25f ? 0 : (layer.origin_y > 0.75f ? 2 : 1);
+    return y * 3 + x;
+}
+
+static QPointF rotated_scaled_delta(double dx, double dy, double rot_deg, double sx, double sy)
+{
+    double rot = rot_deg * 3.14159265358979323846 / 180.0;
+    double x = dx * sx;
+    double y = dy * sy;
+    double c = std::cos(rot);
+    double s = std::sin(rot);
+    return QPointF(x * c - y * s, x * s + y * c);
+}
+
+static QPointF shadow_offset(const Layer &layer)
+{
+    double radians = layer.shadow_angle * 3.14159265358979323846 / 180.0;
+    return QPointF(std::cos(radians) * layer.shadow_distance,
+                   std::sin(radians) * layer.shadow_distance);
+}
+
 
 static double eval_box_width(const Layer &layer, double t)
 {
@@ -647,6 +682,31 @@ void TitleEditor::build_ui()
             });
 }
 
+void TitleEditor::align_selected_to_canvas(int x_mode, int y_mode)
+{
+    if (!title_ || sel_layer_id_.empty()) return;
+    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    std::shared_ptr<Layer> last_layer;
+    for (const auto &id : ids) {
+        auto layer = title_->find_layer(id);
+        if (!layer) continue;
+        double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
+        double w = eval_box_width(*layer, lt);
+        double h = eval_box_height(*layer, lt);
+        double x = layer->origin_x * w;
+        if (x_mode == 1) x = title_->width / 2.0;
+        if (x_mode == 2) x = title_->width - (1.0 - layer->origin_x) * w;
+        double y = layer->origin_y * h;
+        if (y_mode == 1) y = title_->height / 2.0;
+        if (y_mode == 2) y = title_->height - (1.0 - layer->origin_y) * h;
+        set_animated_value(layer->pos_x, lt, x);
+        set_animated_value(layer->pos_y, lt, y);
+        last_layer = layer;
+    }
+    on_title_modified();
+    if (props_ && last_layer) props_->set_layer(last_layer, playhead_);
+}
+
 void TitleEditor::build_toolbar()
 {
     toolbar_ = new QToolBar(this);
@@ -689,6 +749,26 @@ void TitleEditor::build_toolbar()
     zoom_out->setStyleSheet(zoom_in->styleSheet());
     toolbar_->addWidget(zoom_out);
     toolbar_->addWidget(zoom_in);
+
+    toolbar_->addSeparator();
+    auto *align_canvas = new QComboBox(toolbar_);
+    align_canvas->addItem("Align to canvas…", -1);
+    for (const QString &label : QStringList{"Top Left", "Top Center", "Top Right", "Center Left", "Center", "Center Right", "Bottom Left", "Bottom Center", "Bottom Right"})
+        align_canvas->addItem(label, align_canvas->count() - 1);
+    align_canvas->setToolTip("Align the selected layer to the canvas");
+    connect(align_canvas, QOverload<int>::of(&QComboBox::activated), this, [this, align_canvas](int idx) {
+        int anchor = align_canvas->itemData(idx).toInt();
+        if (anchor >= 0) {
+            align_selected_to_canvas(anchor % 3, anchor / 3);
+            align_canvas->setCurrentIndex(0);
+        }
+    });
+    toolbar_->addWidget(align_canvas);
+
+    act_safe_guides_ = toolbar_->addAction("Safe");
+    act_safe_guides_->setCheckable(true);
+    act_safe_guides_->setToolTip("Show title/action safe guides in the editor preview only");
+    connect(act_safe_guides_, &QAction::toggled, canvas_, &CanvasPreview::set_safe_guides_visible);
 
     toolbar_->addSeparator();
 
@@ -906,6 +986,12 @@ void CanvasPreview::set_selected_layer(const std::string &lid)
     sel_layer_id_ = lid; update();
 }
 
+void CanvasPreview::set_safe_guides_visible(bool visible)
+{
+    safe_guides_visible_ = visible;
+    update();
+}
+
 void CanvasPreview::refresh_preview()
 {
     dirty_ = true;
@@ -1109,6 +1195,15 @@ void CanvasPreview::render_to_pixmap()
 
         if (layer->type == LayerType::SolidRect) {
             QColor fc = color_from_argb(eval_fill_color(*layer, lt));
+            if (layer->shadow_enabled) {
+                QColor sc = color_from_argb(layer->shadow_color);
+                sc.setAlphaF(std::clamp((double)sc.alphaF() * layer->shadow_opacity, 0.0, 1.0));
+                QRectF shadow_box = box.translated(shadow_offset(*layer));
+                p.setBrush(sc);
+                p.setPen(Qt::NoPen);
+                if (layer->corner_radius > 0) p.drawRoundedRect(shadow_box, layer->corner_radius, layer->corner_radius);
+                else p.drawRect(shadow_box);
+            }
             if (layer->corner_radius > 0) {
                 p.setBrush(fc);
                 p.setPen(Qt::NoPen);
@@ -1137,6 +1232,18 @@ void CanvasPreview::render_to_pixmap()
             f.setBold(layer->font_bold);
             f.setItalic(layer->font_italic);
             p.setFont(f);
+            if (layer->shadow_enabled) {
+                QColor sc = color_from_argb(layer->shadow_color);
+                sc.setAlphaF(std::clamp((double)sc.alphaF() * layer->shadow_opacity, 0.0, 1.0));
+                Qt::AlignmentFlag sha = Qt::AlignHCenter;
+                if (layer->align_h == 0) sha = Qt::AlignLeft;
+                if (layer->align_h == 2) sha = Qt::AlignRight;
+                Qt::AlignmentFlag sva = Qt::AlignVCenter;
+                if (layer->align_v == 0) sva = Qt::AlignTop;
+                if (layer->align_v == 2) sva = Qt::AlignBottom;
+                p.setPen(sc);
+                p.drawText(box.translated(shadow_offset(*layer)), sha | sva, QString::fromStdString(layer->text_content));
+            }
             p.setPen(tc);
             Qt::AlignmentFlag ha = Qt::AlignHCenter;
             if (layer->align_h == 0) ha = Qt::AlignLeft;
@@ -1179,6 +1286,17 @@ void CanvasPreview::paintEvent(QPaintEvent *)
                 p.drawRect(cx, cy, 12, 12);
 
     p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
+
+    if (safe_guides_visible_) {
+        auto draw_guide = [&](double inset, const QColor &color) {
+            QRectF r(ox + dw * inset, oy + dh * inset, dw * (1.0 - 2.0 * inset), dh * (1.0 - 2.0 * inset));
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(color, 1.0, Qt::DashLine));
+            p.drawRect(r);
+        };
+        draw_guide(0.05, QColor(0, 200, 255, 190));
+        draw_guide(0.10, QColor(255, 220, 0, 190));
+    }
 
     auto layer = selected_layer();
     if (!layer) return;
@@ -1335,6 +1453,7 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
 
     list_ = new QListWidget(this);
     list_->setDragDropMode(QAbstractItemView::InternalMove);
+    list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     list_->setAlternatingRowColors(false);
     list_->setUniformItemSizes(false);
     list_->setStyleSheet(
@@ -1559,6 +1678,16 @@ std::string LayerStack::selected_id() const
 {
     auto *item = list_->currentItem();
     return item ? item->data(Qt::UserRole).toString().toStdString() : "";
+}
+
+std::vector<std::string> LayerStack::selected_ids() const
+{
+    std::vector<std::string> ids;
+    for (auto *item : list_->selectedItems())
+        ids.push_back(item->data(Qt::UserRole).toString().toStdString());
+    if (ids.empty() && list_->currentItem())
+        ids.push_back(list_->currentItem()->data(Qt::UserRole).toString().toStdString());
+    return ids;
 }
 
 void LayerStack::on_selection_changed()
@@ -2238,6 +2367,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_origin_y_->setDecimals(2);
     spn_origin_x_->setToolTip("Horizontal origin: 0=left, 0.5=center, 1=right.");
     spn_origin_y_->setToolTip("Vertical origin: 0=top, 0.5=center, 1=bottom.");
+    cmb_anchor_ = new QComboBox(inner);
+    for (const QString &label : QStringList{"Top Left", "Top Center", "Top Right", "Center Left", "Center", "Center Right", "Bottom Left", "Bottom Center", "Bottom Right"})
+        cmb_anchor_->addItem(label);
+    cmb_anchor_->setToolTip("Change layer anchor/origin while preserving visual position.");
+    cmb_anchor_->setStyleSheet("QComboBox{color:#ccc;background:#2a2a2a;border:none;border-radius:2px;padding:2px;}");
 
     btn_kf_pos_x_ = mk_kf_button("Toggle X position keyframe");
     btn_kf_pos_y_ = mk_kf_button("Toggle Y position keyframe");
@@ -2249,6 +2383,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     tfl->addRow("Y:",       with_kf(spn_py_, btn_kf_pos_y_));
     tfl->addRow("Rotation:",with_kf(spn_rot_, btn_kf_rotation_));
     tfl->addRow("Opacity:", with_kf(spn_opacity_, btn_kf_opacity_));
+    tfl->addRow("Anchor:", cmb_anchor_);
     tfl->addRow("Origin X:", with_kf(spn_origin_x_, btn_kf_origin_x_));
     tfl->addRow("Origin Y:", with_kf(spn_origin_y_, btn_kf_origin_y_));
     vl->addWidget(tform_box);
@@ -2292,6 +2427,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bi_row->addWidget(chk_italic_);
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
+    cmb_text_align_ = new QComboBox(inner);
+    cmb_text_align_->addItem("Align Left", 0);
+    cmb_text_align_->addItem("Align Center", 1);
+    cmb_text_align_->addItem("Align Right", 2);
+    cmb_text_align_->setStyleSheet(cmb_font_->styleSheet());
+    txfl->addRow("Alignment:", cmb_text_align_);
     txfl->addRow("Live edit:", chk_expose_text_);
     btn_text_color_ = new QPushButton(inner);
     btn_kf_text_color_ = mk_kf_button("Toggle text color keyframe");
@@ -2336,6 +2477,32 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     ifl->addRow("", chk_lock_aspect_);
     vl->addWidget(image_box_);
 
+    shadow_box_ = new QGroupBox("Drop Shadow", inner);
+    shadow_box_->setStyleSheet(tform_box->styleSheet());
+    auto *sfl = new QFormLayout(shadow_box_);
+    sfl->setSpacing(3);
+    chk_shadow_enabled_ = new QCheckBox("Enable shadow", inner);
+    chk_shadow_enabled_->setStyleSheet("color:#ccc;");
+    cmb_shadow_preset_ = new QComboBox(inner);
+    cmb_shadow_preset_->addItems({"Custom", "Soft", "Medium", "Strong", "Broadcast"});
+    cmb_shadow_preset_->setStyleSheet(cmb_font_->styleSheet());
+    btn_shadow_color_ = new QPushButton(inner);
+    spn_shadow_opacity_ = mk_dspin(0.0, 1.0, 0.05);
+    spn_shadow_opacity_->setDecimals(2);
+    spn_shadow_distance_ = mk_dspin(0.0, 200.0, 1.0);
+    spn_shadow_angle_ = mk_dspin(-360.0, 360.0, 5.0);
+    spn_shadow_blur_ = mk_dspin(0.0, 100.0, 1.0);
+    spn_shadow_spread_ = mk_dspin(0.0, 100.0, 1.0);
+    sfl->addRow("", chk_shadow_enabled_);
+    sfl->addRow("Preset:", cmb_shadow_preset_);
+    sfl->addRow("Color:", btn_shadow_color_);
+    sfl->addRow("Opacity:", spn_shadow_opacity_);
+    sfl->addRow("Distance:", spn_shadow_distance_);
+    sfl->addRow("Angle:", spn_shadow_angle_);
+    sfl->addRow("Blur:", spn_shadow_blur_);
+    sfl->addRow("Spread:", spn_shadow_spread_);
+    vl->addWidget(shadow_box_);
+
     vl->addStretch();
     setWidget(inner);
 
@@ -2371,6 +2538,27 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change](double v){
                 if (can_edit()) { layer_->origin_y = (float)v; set_animated_value(layer_->origin_y_prop, local_time(), v); emit_change(); }
             });
+    connect(cmb_anchor_, QOverload<int>::of(&QComboBox::activated),
+            this, [this, can_edit, local_time, emit_change](int idx) {
+                if (!can_edit()) return;
+                double t = local_time();
+                QPointF next = anchor_point_from_index(idx);
+                double w = eval_box_width(*layer_, t);
+                double h = eval_box_height(*layer_, t);
+                QPointF keep = rotated_scaled_delta((next.x() - layer_->origin_x) * w,
+                                                    (next.y() - layer_->origin_y) * h,
+                                                    layer_->rotation.evaluate(t),
+                                                    layer_->scale_x.evaluate(t),
+                                                    layer_->scale_y.evaluate(t));
+                layer_->origin_x = (float)next.x();
+                layer_->origin_y = (float)next.y();
+                set_animated_value(layer_->origin_x_prop, t, next.x());
+                set_animated_value(layer_->origin_y_prop, t, next.y());
+                set_animated_value(layer_->pos_x, t, layer_->pos_x.evaluate(t) + keep.x());
+                set_animated_value(layer_->pos_y, t, layer_->pos_y.evaluate(t) + keep.y());
+                load_values();
+                emit_change();
+            });
     connect(txt_content_, &QLineEdit::textChanged,
             this, [this, can_edit, emit_change](const QString &s){
                 if (can_edit()) { layer_->text_content = s.toStdString(); emit_change(); }
@@ -2395,6 +2583,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->expose_text = v; emit_change(); }
             });
+    connect(cmb_text_align_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int idx) {
+                if (can_edit()) { layer_->align_h = cmb_text_align_->itemData(idx).toInt(); emit_change(); }
+            });
     connect(btn_text_color_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
@@ -2407,6 +2599,43 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 style_color_button(btn_text_color_, layer_->text_color);
                 emit_change();
             });
+    connect(chk_shadow_enabled_, &QCheckBox::toggled, this, [this, can_edit, emit_change](bool v) {
+        if (can_edit()) { layer_->shadow_enabled = v; emit_change(); }
+    });
+    connect(cmb_shadow_preset_, QOverload<int>::of(&QComboBox::activated), this, [this, can_edit, emit_change](int idx) {
+        if (!can_edit() || idx <= 0) return;
+        static const struct { float opacity, distance, blur; uint32_t color; } presets[] = {
+            {0.35f, 5.0f, 8.0f, 0x99000000}, {0.55f, 8.0f, 5.0f, 0xAA000000},
+            {0.75f, 12.0f, 3.0f, 0xCC000000}, {0.65f, 10.0f, 4.0f, 0xCC001428},
+        };
+        const auto &p = presets[std::clamp(idx - 1, 0, 3)];
+        layer_->shadow_enabled = true; layer_->shadow_opacity = p.opacity; layer_->shadow_distance = p.distance;
+        layer_->shadow_blur = p.blur; layer_->shadow_color = p.color;
+        load_values(); emit_change();
+    });
+    connect(btn_shadow_color_, &QPushButton::clicked, this, [this, can_edit, emit_change]() {
+        if (!can_edit()) return;
+        QColor picked = QColorDialog::getColor(color_from_argb(layer_->shadow_color), this, "Shadow Color", QColorDialog::ShowAlphaChannel);
+        if (!picked.isValid()) return;
+        layer_->shadow_color = argb_from_color(picked);
+        style_color_button(btn_shadow_color_, layer_->shadow_color);
+        emit_change();
+    });
+    auto shadow_spin_changed = [this, can_edit, emit_change](double) {
+        if (!can_edit()) return;
+        layer_->shadow_opacity = (float)spn_shadow_opacity_->value();
+        layer_->shadow_distance = (float)spn_shadow_distance_->value();
+        layer_->shadow_angle = (float)spn_shadow_angle_->value();
+        layer_->shadow_blur = (float)spn_shadow_blur_->value();
+        layer_->shadow_spread = (float)spn_shadow_spread_->value();
+        emit_change();
+    };
+    connect(spn_shadow_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
+    connect(spn_shadow_distance_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
+    connect(spn_shadow_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
+    connect(spn_shadow_blur_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
+    connect(spn_shadow_spread_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, shadow_spin_changed);
+
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
                 if (!can_edit()) return;
@@ -2608,6 +2837,16 @@ void PropertiesPanel::load_values()
         spn_size_->setValue(72);
         chk_bold_->setChecked(false);
         chk_italic_->setChecked(false);
+        if (cmb_text_align_) cmb_text_align_->setCurrentIndex(1);
+        if (cmb_anchor_) cmb_anchor_->setCurrentIndex(4);
+        if (chk_shadow_enabled_) chk_shadow_enabled_->setChecked(false);
+        if (cmb_shadow_preset_) cmb_shadow_preset_->setCurrentIndex(0);
+        if (btn_shadow_color_) style_color_button(btn_shadow_color_, 0x99000000);
+        if (spn_shadow_opacity_) spn_shadow_opacity_->setValue(0.6);
+        if (spn_shadow_distance_) spn_shadow_distance_->setValue(8.0);
+        if (spn_shadow_angle_) spn_shadow_angle_->setValue(135.0);
+        if (spn_shadow_blur_) spn_shadow_blur_->setValue(4.0);
+        if (spn_shadow_spread_) spn_shadow_spread_->setValue(0.0);
         for (auto *b : {btn_kf_pos_x_, btn_kf_pos_y_, btn_kf_rotation_, btn_kf_opacity_,
                         btn_kf_origin_x_, btn_kf_origin_y_, btn_kf_width_, btn_kf_height_,
                         btn_kf_text_color_, btn_kf_fill_color_})
@@ -2651,6 +2890,7 @@ void PropertiesPanel::load_values()
                            : layer_->opacity.static_value);
     spn_origin_x_->setValue(eval_origin_x(*layer_, lt));
     spn_origin_y_->setValue(eval_origin_y(*layer_, lt));
+    cmb_anchor_->setCurrentIndex(anchor_index_from_layer(*layer_));
 
     spn_layer_w_->setValue(eval_box_width(*layer_, lt));
     spn_layer_h_->setValue(eval_box_height(*layer_, lt));
@@ -2685,6 +2925,22 @@ void PropertiesPanel::load_values()
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
     chk_expose_text_->setChecked(layer_->expose_text);
+    int ai = cmb_text_align_->findData(layer_->align_h);
+    cmb_text_align_->setCurrentIndex(ai >= 0 ? ai : 1);
+
+    chk_shadow_enabled_->setChecked(layer_->shadow_enabled);
+    cmb_shadow_preset_->setCurrentIndex(0);
+    style_color_button(btn_shadow_color_, layer_->shadow_color);
+    spn_shadow_opacity_->setValue(layer_->shadow_opacity);
+    spn_shadow_distance_->setValue(layer_->shadow_distance);
+    spn_shadow_angle_->setValue(layer_->shadow_angle);
+    spn_shadow_blur_->setValue(layer_->shadow_blur);
+    spn_shadow_spread_->setValue(layer_->shadow_spread);
+
+    QFontDatabase fdb;
+    cmb_font_->setToolTip(fdb.families().contains(QString::fromStdString(layer_->font_family))
+        ? QString()
+        : QString("Font '%1' is not installed in Qt; OBS/Pango may substitute it.").arg(QString::fromStdString(layer_->font_family)));
 
     loading_values_ = false;
 }

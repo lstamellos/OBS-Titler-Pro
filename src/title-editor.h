@@ -90,6 +90,7 @@ private:
     void build_ui();
     void build_toolbar();
     void update_title_bar();
+    void align_selected_to_canvas(int x_mode, int y_mode);
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -113,6 +114,7 @@ private:
     QAction         *act_rew_   = nullptr;
     QAction         *act_prev_kf_ = nullptr;
     QAction         *act_next_kf_ = nullptr;
+    QAction         *act_safe_guides_ = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -127,6 +129,7 @@ public:
     void set_title(std::shared_ptr<Title> t);
     void set_playhead(double t);
     void set_selected_layer(const std::string &lid);
+    void set_safe_guides_visible(bool visible);
     void refresh_preview();
 
 signals:
@@ -162,6 +165,7 @@ private:
     float  zoom_     = 1.0f;
     QPixmap frame_pixmap_;
     bool dirty_ = true;
+    bool safe_guides_visible_ = false;
 
     DragMode drag_mode_ = DragMode::None;
     QPointF drag_start_canvas_;
@@ -185,6 +189,7 @@ public:
     void set_title(std::shared_ptr<Title> t);
     void refresh();
     void set_selected_layer(const std::string &layer_id);
+    std::vector<std::string> selected_ids() const;
 
 signals:
     void layer_selected(const std::string &layer_id);
@@ -333,6 +338,7 @@ private:
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
     QCheckBox       *chk_expose_text_ = nullptr;
+    QComboBox       *cmb_text_align_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
 
     /* Rectangle/Image geometry controls */
@@ -354,6 +360,16 @@ private:
     QDoubleSpinBox  *spn_origin_x_ = nullptr;
     QDoubleSpinBox  *spn_origin_y_ = nullptr;
     QCheckBox       *chk_lock_aspect_ = nullptr;
+    QComboBox       *cmb_anchor_ = nullptr;
+    QGroupBox       *shadow_box_ = nullptr;
+    QCheckBox       *chk_shadow_enabled_ = nullptr;
+    QComboBox       *cmb_shadow_preset_ = nullptr;
+    QPushButton     *btn_shadow_color_ = nullptr;
+    QDoubleSpinBox  *spn_shadow_opacity_ = nullptr;
+    QDoubleSpinBox  *spn_shadow_distance_ = nullptr;
+    QDoubleSpinBox  *spn_shadow_angle_ = nullptr;
+    QDoubleSpinBox  *spn_shadow_blur_ = nullptr;
+    QDoubleSpinBox  *spn_shadow_spread_ = nullptr;
     QPushButton     *btn_kf_pos_x_ = nullptr;
     QPushButton     *btn_kf_pos_y_ = nullptr;
     QPushButton     *btn_kf_rotation_ = nullptr;

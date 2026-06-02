@@ -139,6 +139,15 @@ struct Layer {
     AnimatedProperty origin_x_prop { "origin_x", 0.5 };
     AnimatedProperty origin_y_prop { "origin_y", 0.5 };
 
+    /* ----- Drop shadow ----- */
+    bool        shadow_enabled = false;
+    uint32_t    shadow_color   = 0x99000000;
+    float       shadow_opacity = 0.6f;
+    float       shadow_distance = 8.0f;
+    float       shadow_angle = 135.0f;
+    float       shadow_blur = 4.0f;
+    float       shadow_spread = 0.0f;
+
     /* ----- Keyframable color channels, 0-255 ARGB. */
     AnimatedProperty text_color_a { "text_color_a", 255.0 };
     AnimatedProperty text_color_r { "text_color_r", 255.0 };

@@ -320,6 +320,13 @@ static json layer_to_json(const Layer &l)
     j["origin_y"]      = l.origin_y;
     j["origin_x_prop"] = aprop_to_json(l.origin_x_prop);
     j["origin_y_prop"] = aprop_to_json(l.origin_y_prop);
+    j["shadow_enabled"] = l.shadow_enabled;
+    j["shadow_color"] = l.shadow_color;
+    j["shadow_opacity"] = l.shadow_opacity;
+    j["shadow_distance"] = l.shadow_distance;
+    j["shadow_angle"] = l.shadow_angle;
+    j["shadow_blur"] = l.shadow_blur;
+    j["shadow_spread"] = l.shadow_spread;
     j["text_color_a"]  = aprop_to_json(l.text_color_a);
     j["text_color_r"]  = aprop_to_json(l.text_color_r);
     j["text_color_g"]  = aprop_to_json(l.text_color_g);
@@ -379,6 +386,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     l->origin_y_prop.static_value = l->origin_y;
     if (j.contains("origin_x_prop")) l->origin_x_prop = aprop_from_json(j["origin_x_prop"], "origin_x");
     if (j.contains("origin_y_prop")) l->origin_y_prop = aprop_from_json(j["origin_y_prop"], "origin_y");
+    l->shadow_enabled = j.value("shadow_enabled", false);
+    l->shadow_color = j.value("shadow_color", (uint32_t)0x99000000);
+    l->shadow_opacity = j.value("shadow_opacity", 0.6f);
+    l->shadow_distance = j.value("shadow_distance", 8.0f);
+    l->shadow_angle = j.value("shadow_angle", 135.0f);
+    l->shadow_blur = j.value("shadow_blur", 4.0f);
+    l->shadow_spread = j.value("shadow_spread", 0.0f);
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);
     if (j.contains("text_color_a")) l->text_color_a = aprop_from_json(j["text_color_a"], "text_color_a");

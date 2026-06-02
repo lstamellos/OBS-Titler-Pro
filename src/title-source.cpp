@@ -21,6 +21,7 @@
 #include <pango/pangocairo.h>
 #include <QImage>
 #include <QString>
+#include <QPointF>
 
 #include <memory>
 #include <string>
@@ -154,6 +155,13 @@ static uint32_t eval_fill_color(const Layer &layer, double t)
            (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
 }
 
+static QPointF shadow_offset(const Layer &layer)
+{
+    double radians = layer.shadow_angle * kPi / 180.0;
+    return QPointF(std::cos(radians) * layer.shadow_distance,
+                   std::sin(radians) * layer.shadow_distance);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  Cairo rendering
  * ══════════════════════════════════════════════════════════════════ */
@@ -208,6 +216,17 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     if (layer.align_v == 2) text_y += box_h - ph;
     cairo_translate(cr, text_x, text_y);
 
+    if (layer.shadow_enabled) {
+        double sr, sg, sb, sa;
+        unpack_color(layer.shadow_color, sr, sg, sb, sa);
+        QPointF off = shadow_offset(layer);
+        cairo_save(cr);
+        cairo_translate(cr, off.x(), off.y());
+        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * layer.shadow_opacity);
+        pango_cairo_show_layout(cr, layout);
+        cairo_restore(cr);
+    }
+
     if (layer.stroke_width > 0.01f) {
         double sr, sg, sb, sa;
         unpack_color(layer.stroke_color, sr, sg, sb, sa);
@@ -259,6 +278,37 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
         cairo_close_path(cr);
     } else {
         cairo_rectangle(cr, 0, 0, w, h);
+    }
+
+    if (layer.shadow_enabled) {
+        double sr, sg, sb, sa;
+        unpack_color(layer.shadow_color, sr, sg, sb, sa);
+        QPointF off = shadow_offset(layer);
+        cairo_save(cr);
+        cairo_translate(cr, off.x(), off.y());
+        if (r > 0.0) {
+            cairo_new_sub_path(cr);
+            cairo_arc(cr, r,     r,     r,  kPi,       3*kPi/2);
+            cairo_arc(cr, w-r,   r,     r,  3*kPi/2,   2*kPi);
+            cairo_arc(cr, w-r,   h-r,   r,  0,          kPi/2);
+            cairo_arc(cr, r,     h-r,   r,  kPi/2,     kPi);
+            cairo_close_path(cr);
+        } else {
+            cairo_rectangle(cr, 0, 0, w, h);
+        }
+        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * layer.shadow_opacity);
+        cairo_fill(cr);
+        cairo_restore(cr);
+        if (r > 0.0) {
+            cairo_new_sub_path(cr);
+            cairo_arc(cr, r,     r,     r,  kPi,       3*kPi/2);
+            cairo_arc(cr, w-r,   r,     r,  3*kPi/2,   2*kPi);
+            cairo_arc(cr, w-r,   h-r,   r,  0,          kPi/2);
+            cairo_arc(cr, r,     h-r,   r,  kPi/2,     kPi);
+            cairo_close_path(cr);
+        } else {
+            cairo_rectangle(cr, 0, 0, w, h);
+        }
     }
 
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
