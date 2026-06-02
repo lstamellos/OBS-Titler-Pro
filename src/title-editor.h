@@ -91,6 +91,8 @@ private:
     void build_toolbar();
     void update_title_bar();
     void align_selected_to_canvas(int x_mode, int y_mode);
+    void align_selected_layers_horizontal();
+    void align_selected_layers_vertical();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -157,7 +159,7 @@ private:
     QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
     QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
     DragMode hit_test_selected(const QPointF &view_pt) const;
-    void apply_drag(const QPointF &view_pt);
+    void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;

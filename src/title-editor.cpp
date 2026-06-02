@@ -49,6 +49,7 @@
 #include <vector>
 #include <initializer_list>
 #include <set>
+#include <limits>
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Dark AE-style palette constants                                   */
@@ -707,6 +708,79 @@ void TitleEditor::align_selected_to_canvas(int x_mode, int y_mode)
     if (props_ && last_layer) props_->set_layer(last_layer, playhead_);
 }
 
+
+void TitleEditor::align_selected_layers_horizontal()
+{
+    if (!title_ || sel_layer_id_.empty()) return;
+    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    if (ids.size() < 2) return;
+
+    struct Entry { std::shared_ptr<Layer> layer; double lt; double width; double scale; };
+    std::vector<Entry> entries;
+    double min_left = std::numeric_limits<double>::infinity();
+    double max_right = -std::numeric_limits<double>::infinity();
+
+    for (const auto &id : ids) {
+        auto layer = title_->find_layer(id);
+        if (!layer || layer->locked) continue;
+        double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
+        double width = eval_box_width(*layer, lt);
+        double scale = layer->scale_x.evaluate(lt);
+        double left = layer->pos_x.evaluate(lt) - layer->origin_x * width * scale;
+        double right = layer->pos_x.evaluate(lt) + (1.0 - layer->origin_x) * width * scale;
+        min_left = std::min(min_left, left);
+        max_right = std::max(max_right, right);
+        entries.push_back({layer, lt, width, scale});
+    }
+
+    if (entries.size() < 2 || !std::isfinite(min_left) || !std::isfinite(max_right)) return;
+    double target_center = (min_left + max_right) / 2.0;
+    std::shared_ptr<Layer> last_layer;
+    for (const auto &entry : entries) {
+        double next_x = target_center - (0.5 - entry.layer->origin_x) * entry.width * entry.scale;
+        set_animated_value(entry.layer->pos_x, entry.lt, next_x);
+        last_layer = entry.layer;
+    }
+    on_title_modified();
+    if (props_ && last_layer) props_->set_layer(last_layer, playhead_);
+}
+
+void TitleEditor::align_selected_layers_vertical()
+{
+    if (!title_ || sel_layer_id_.empty()) return;
+    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    if (ids.size() < 2) return;
+
+    struct Entry { std::shared_ptr<Layer> layer; double lt; double height; double scale; };
+    std::vector<Entry> entries;
+    double min_top = std::numeric_limits<double>::infinity();
+    double max_bottom = -std::numeric_limits<double>::infinity();
+
+    for (const auto &id : ids) {
+        auto layer = title_->find_layer(id);
+        if (!layer || layer->locked) continue;
+        double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
+        double height = eval_box_height(*layer, lt);
+        double scale = layer->scale_y.evaluate(lt);
+        double top = layer->pos_y.evaluate(lt) - layer->origin_y * height * scale;
+        double bottom = layer->pos_y.evaluate(lt) + (1.0 - layer->origin_y) * height * scale;
+        min_top = std::min(min_top, top);
+        max_bottom = std::max(max_bottom, bottom);
+        entries.push_back({layer, lt, height, scale});
+    }
+
+    if (entries.size() < 2 || !std::isfinite(min_top) || !std::isfinite(max_bottom)) return;
+    double target_center = (min_top + max_bottom) / 2.0;
+    std::shared_ptr<Layer> last_layer;
+    for (const auto &entry : entries) {
+        double next_y = target_center - (0.5 - entry.layer->origin_y) * entry.height * entry.scale;
+        set_animated_value(entry.layer->pos_y, entry.lt, next_y);
+        last_layer = entry.layer;
+    }
+    on_title_modified();
+    if (props_ && last_layer) props_->set_layer(last_layer, playhead_);
+}
+
 void TitleEditor::build_toolbar()
 {
     toolbar_ = new QToolBar(this);
@@ -751,6 +825,13 @@ void TitleEditor::build_toolbar()
     toolbar_->addWidget(zoom_in);
 
     toolbar_->addSeparator();
+    QAction *align_h = toolbar_->addAction("Align H");
+    align_h->setToolTip("Align selected layers to the same horizontal center");
+    connect(align_h, &QAction::triggered, this, &TitleEditor::align_selected_layers_horizontal);
+    QAction *align_v = toolbar_->addAction("Align V");
+    align_v->setToolTip("Align selected layers to the same vertical center");
+    connect(align_v, &QAction::triggered, this, &TitleEditor::align_selected_layers_vertical);
+
     auto *align_canvas = new QComboBox(toolbar_);
     align_canvas->addItem("Align to canvas…", -1);
     for (const QString &label : QStringList{"Top Left", "Top Center", "Top Right", "Center Left", "Center", "Center Right", "Bottom Left", "Bottom Center", "Bottom Right"})
@@ -768,7 +849,9 @@ void TitleEditor::build_toolbar()
     act_safe_guides_ = toolbar_->addAction("Safe");
     act_safe_guides_->setCheckable(true);
     act_safe_guides_->setToolTip("Show title/action safe guides in the editor preview only");
-    connect(act_safe_guides_, &QAction::toggled, canvas_, &CanvasPreview::set_safe_guides_visible);
+    connect(act_safe_guides_, &QAction::toggled, this, [this](bool visible) {
+        if (canvas_) canvas_->set_safe_guides_visible(visible);
+    });
 
     toolbar_->addSeparator();
 
@@ -1100,7 +1183,7 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
     return DragMode::None;
 }
 
-void CanvasPreview::apply_drag(const QPointF &view_pt)
+void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
     auto layer = selected_layer();
     if (!layer || drag_mode_ == DragMode::None) return;
@@ -1111,6 +1194,12 @@ void CanvasPreview::apply_drag(const QPointF &view_pt)
                            std::max(0.0, layer->out_time - layer->in_time));
 
     if (drag_mode_ == DragMode::Move) {
+        if (modifiers & Qt::ShiftModifier) {
+            if (std::abs(delta.x()) >= std::abs(delta.y()))
+                delta.setY(0.0);
+            else
+                delta.setX(0.0);
+        }
         set_animated_value(layer->pos_x, lt, drag_start_x_ + delta.x());
         set_animated_value(layer->pos_y, lt, drag_start_y_ + delta.y());
     } else if (drag_mode_ == DragMode::Origin) {
@@ -1367,7 +1456,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 {
     if (drag_mode_ != DragMode::None && (ev->buttons() & Qt::LeftButton)) {
-        apply_drag(ev->pos());
+        apply_drag(ev->pos(), ev->modifiers());
         ev->accept();
         return;
     }
