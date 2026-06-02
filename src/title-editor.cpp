@@ -1369,7 +1369,7 @@ void TitleEditor::on_playhead_changed(double t)
         time_lbl_->setText(QString("%1  (%2 fps)").arg(format_timecode(t)).arg(obs_frame_rate(), 0, 'f', 2));
 }
 
-void TitleEditor::on_title_modified()
+QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const
 {
     if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
     canvas_->refresh_preview();
@@ -1380,18 +1380,23 @@ void TitleEditor::on_title_modified()
     TitleDataStore::instance().save();
 }
 
-/* ══════════════════════════════════════════════════════════════════
- *  CanvasPreview
- * ══════════════════════════════════════════════════════════════════ */
-CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
+QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
 {
-    setMinimumSize(400, 225);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setStyleSheet("background:#111;");
-    setMouseTracking(true);
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = -layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double dx = canvas_pt.x() - px;
+    double dy = canvas_pt.y() - py;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    double sx = std::max(0.0001, layer.scale_x.evaluate(lt));
+    double sy = std::max(0.0001, layer.scale_y.evaluate(lt));
+    return QPointF((dx * c - dy * ss) / sx,
+                   (dx * ss + dy * c) / sy);
 }
 
-void CanvasPreview::set_title(std::shared_ptr<Title> t)
+QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
 {
     title_ = t; dirty_ = true; update();
 }
