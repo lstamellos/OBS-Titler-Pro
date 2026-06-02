@@ -117,7 +117,6 @@ void TitleDock::build_ui()
     toolbar->addStretch();
     toolbar->addWidget(btn_edit_);
     toolbar->addWidget(btn_scene_);
-    root->addLayout(toolbar);
 
     auto *sections = new QSplitter(Qt::Vertical, container_);
     sections->setChildrenCollapsible(false);
@@ -127,6 +126,7 @@ void TitleDock::build_ui()
     auto *template_layout = new QVBoxLayout(template_section);
     template_layout->setContentsMargins(0, 0, 0, 0);
     template_layout->setSpacing(4);
+    template_layout->addLayout(toolbar);
 
     /* ── template/title section ── */
     auto *template_lbl = new QLabel("Title templates", template_section);
@@ -172,29 +172,13 @@ void TitleDock::build_ui()
     sections->setStretchFactor(0, 2);
     sections->setStretchFactor(1, 1);
 
-    /* ── exposed text section ── */
-    text_editor_lbl_ = new QLabel("Live text", container_);
-    text_editor_lbl_->setStyleSheet("font-weight:bold;color:#ddd;margin-top:4px;");
-    root->addWidget(text_editor_lbl_);
-
-    text_table_ = new QTableWidget(container_);
-    text_table_->setRowCount(1);
-    text_table_->setMinimumHeight(72);
-    text_table_->setAlternatingRowColors(false);
-    text_table_->verticalHeader()->hide();
-    text_table_->horizontalHeader()->setStretchLastSection(true);
-    text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    text_table_->setSelectionMode(QAbstractItemView::NoSelection);
-    text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    root->addWidget(text_table_, 0);
-
     /* ── status ── */
     status_lbl_ = new QLabel("No title selected", container_);
     status_lbl_->setAlignment(Qt::AlignCenter);
     QFont sf = status_lbl_->font();
     sf.setPointSize(sf.pointSize() - 1);
     status_lbl_->setFont(sf);
-    root->addWidget(status_lbl_);
+    template_layout->addWidget(status_lbl_);
 
     setWidget(container_);
 
@@ -321,7 +305,7 @@ void TitleDock::populate_exposed_text()
     QStringList headers;
     for (const auto &layer : exposed)
         headers << QString::fromStdString(layer->name);
-    headers << "Cue" << "Delete";
+    headers << "" << "";
     text_table_->setHorizontalHeaderLabels(headers);
     for (int col = 0; col < (int)exposed.size(); ++col)
         text_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
@@ -346,8 +330,13 @@ void TitleDock::populate_exposed_text()
             text_table_->setCellWidget(row, col, edit);
         }
 
-        auto *cue = new QPushButton("Cue", text_table_);
-        cue->setToolTip("Cue this row: apply its text and run intro/loop/outro animation");
+        auto *cue = new QPushButton("▶", text_table_);
+        cue->setToolTip("Play this row and run the intro/loop/outro animation");
+        cue->setStyleSheet(row == title->current_cue_row
+            ? "QPushButton{background:#b02020;color:white;border:none;border-radius:3px;font-weight:bold;}"
+              "QPushButton:hover{background:#d03030;}"
+            : "QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
+              "QPushButton:hover{background:#3a3a3a;}");
         connect(cue, &QPushButton::clicked, this, [this, title, row]() {
             auto exposed_now = exposed_text_layers(title);
             normalize_live_text_rows(title, exposed_now);
@@ -355,6 +344,7 @@ void TitleDock::populate_exposed_text()
             updating_exposed_text_ = true;
             for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col)
                 exposed_now[col]->text_content = title->live_text_rows[row][col];
+            title->current_cue_row = row;
             ++title->cue_revision;
             TitleDataStore::instance().save();
             TitleDataStore::instance().notify_change();
@@ -369,6 +359,10 @@ void TitleDock::populate_exposed_text()
             if (row < 0 || row >= (int)title->live_text_rows.size()) return;
             updating_exposed_text_ = true;
             title->live_text_rows.erase(title->live_text_rows.begin() + row);
+            if (title->current_cue_row == row)
+                title->current_cue_row = -1;
+            else if (title->current_cue_row > row)
+                --title->current_cue_row;
             auto exposed_now = exposed_text_layers(title);
             normalize_live_text_rows(title, exposed_now);
             TitleDataStore::instance().save();
