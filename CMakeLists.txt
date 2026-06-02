@@ -1,9 +1,29 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-titles VERSION 1.0.0)
+project(obs-titler-pro VERSION 1.0.0)
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ── OBS plugin packaging layout ─────────────────────────────────────
+# OBS' modern manual-install layout is:
+#   <plugins-root>/<plugin-name>/bin/<arch>/<plugin binary>
+#   <plugins-root>/<plugin-name>/data/locale/*.ini
+# Keeping build artifacts in this shape makes the build tree directly copyable
+# into the OBS plugins directory and matches the Windows ProgramData layout.
+set(OBS_TITLES_PLUGIN_NAME "obs-titler-pro")
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(OBS_TITLES_ARCH_DIR "64bit")
+  set(OBS_TITLES_VCPKG_DEFAULT_TRIPLET "x64-windows")
+else()
+  set(OBS_TITLES_ARCH_DIR "32bit")
+  set(OBS_TITLES_VCPKG_DEFAULT_TRIPLET "x86-windows")
+endif()
+set(OBS_TITLES_PACKAGE_DIR
+    "${CMAKE_BINARY_DIR}/${OBS_TITLES_PLUGIN_NAME}"
+    CACHE PATH "Staging directory for the OBS user-plugin folder layout")
+set(OBS_TITLES_PACKAGE_BIN_DIR
+    "${OBS_TITLES_PACKAGE_DIR}/bin/${OBS_TITLES_ARCH_DIR}")
 
 # ── Qt auto-tools ───────────────────────────────────────────────────
 set(CMAKE_AUTOMOC ON)
@@ -16,59 +36,124 @@ find_package(libobs QUIET)
 find_package(obs-frontend-api QUIET)
 
 if(NOT libobs_FOUND OR NOT obs-frontend-api_FOUND)
+  # Allow callers to point at an OBS SDK/install tree without baking in
+  # machine-specific paths. CMake cache values take precedence over
+  # environment variables so CI and developers can override discovery.
+  set(OBS_SEARCH_ROOTS)
+  if(OBS_SDK_DIR)
+    list(APPEND OBS_SEARCH_ROOTS "${OBS_SDK_DIR}")
+  endif()
+  if(DEFINED ENV{OBS_SDK_DIR})
+    list(APPEND OBS_SEARCH_ROOTS "$ENV{OBS_SDK_DIR}")
+  endif()
+  if(DEFINED ENV{OBS_STUDIO_DIR})
+    list(APPEND OBS_SEARCH_ROOTS "$ENV{OBS_STUDIO_DIR}")
+  endif()
+
   if(WIN32)
-    # Search for OBS dependencies package
-    file(GLOB OBS_CANDIDATES "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-*")
-    list(SORT OBS_CANDIDATES ORDER DESCENDING)
-    list(APPEND OBS_CANDIDATES "C:/Program Files/obs-studio")
-    
-    foreach(candidate ${OBS_CANDIDATES})
-      if(EXISTS "${candidate}/lib/obs.lib" OR EXISTS "${candidate}/lib/obs/obs.lib")
-        set(OBS_SDK_DIR "${candidate}" CACHE PATH "Path to OBS Studio SDK" FORCE)
-        break()
+    foreach(base_dir
+        "$ENV{USERPROFILE}/Desktop/obs-build-dependencies"
+        "$ENV{USERPROFILE}/Downloads/obs-build-dependencies"
+        "${CMAKE_SOURCE_DIR}/obs-build-dependencies")
+      if(IS_DIRECTORY "${base_dir}")
+        file(GLOB plugin_deps "${base_dir}/plugin-deps-*")
+        list(SORT plugin_deps ORDER DESCENDING)
+        list(APPEND OBS_SEARCH_ROOTS ${plugin_deps})
       endif()
     endforeach()
 
-    if(OBS_SDK_DIR)
+    if(DEFINED ENV{ProgramFiles})
+      list(APPEND OBS_SEARCH_ROOTS "$ENV{ProgramFiles}/obs-studio")
+    endif()
+    if(DEFINED ENV{ProgramW6432})
+      list(APPEND OBS_SEARCH_ROOTS "$ENV{ProgramW6432}/obs-studio")
+    endif()
+  endif()
+
+  list(REMOVE_DUPLICATES OBS_SEARCH_ROOTS)
+
+  foreach(candidate IN LISTS OBS_SEARCH_ROOTS)
+    if(NOT IS_DIRECTORY "${candidate}")
+      continue()
+    endif()
+
+    unset(OBS_LIB CACHE)
+    unset(OBS_LIB)
+    unset(OBS_FRONTEND_API_LIB CACHE)
+    unset(OBS_FRONTEND_API_LIB)
+    unset(OBS_INCLUDE_DIR CACHE)
+    unset(OBS_INCLUDE_DIR)
+    unset(OBS_DLL CACHE)
+    unset(OBS_DLL)
+    unset(OBS_FRONTEND_API_DLL CACHE)
+    unset(OBS_FRONTEND_API_DLL)
+
+    find_library(OBS_LIB NAMES obs
+      HINTS "${candidate}/lib" "${candidate}/lib/obs"
+      NO_DEFAULT_PATH)
+    find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api
+      HINTS "${candidate}/lib" "${candidate}/lib/obs"
+      NO_DEFAULT_PATH)
+    find_path(OBS_INCLUDE_DIR NAMES obs.h
+      HINTS "${candidate}/include" "${candidate}/include/obs"
+      NO_DEFAULT_PATH)
+
+    if(OBS_LIB AND OBS_FRONTEND_API_LIB AND OBS_INCLUDE_DIR)
+      set(OBS_SDK_DIR "${candidate}" CACHE PATH "Path to OBS Studio SDK" FORCE)
       message(STATUS "Found OBS SDK at: ${OBS_SDK_DIR}")
       list(APPEND CMAKE_PREFIX_PATH "${OBS_SDK_DIR}")
-      find_library(OBS_LIB NAMES obs HINTS "${OBS_SDK_DIR}/lib" "${OBS_SDK_DIR}/lib/obs")
-      find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api HINTS "${OBS_SDK_DIR}/lib" "${OBS_SDK_DIR}/lib/obs")
-      find_path(OBS_INCLUDE_DIR NAMES obs.h HINTS "${OBS_SDK_DIR}/include" "${OBS_SDK_DIR}/include/obs")
 
-      if(OBS_LIB AND OBS_FRONTEND_API_LIB AND OBS_INCLUDE_DIR)
-        # Find DLLs to specify IMPORTED_LOCATION and prevent CMP0111 warnings
-        find_file(OBS_DLL NAMES obs.dll HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin")
-        find_file(OBS_FRONTEND_API_DLL NAMES obs-frontend-api.dll HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin")
+      # Find DLLs to specify IMPORTED_LOCATION and prevent CMP0111 warnings.
+      find_file(OBS_DLL NAMES obs.dll
+        HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin"
+        NO_DEFAULT_PATH)
+      find_file(OBS_FRONTEND_API_DLL NAMES obs-frontend-api.dll
+        HINTS "${OBS_SDK_DIR}/bin/64bit" "${OBS_SDK_DIR}/bin"
+        NO_DEFAULT_PATH)
 
-        if(NOT TARGET OBS::libobs)
-          add_library(OBS::libobs SHARED IMPORTED GLOBAL)
-          set_target_properties(OBS::libobs PROPERTIES
-            IMPORTED_IMPLIB "${OBS_LIB}"
-            INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
-          )
+      if(NOT TARGET OBS::libobs)
+        add_library(OBS::libobs SHARED IMPORTED GLOBAL)
+        set_target_properties(OBS::libobs PROPERTIES
+          INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
+        )
+        if(WIN32)
+          set_target_properties(OBS::libobs PROPERTIES IMPORTED_IMPLIB "${OBS_LIB}")
           if(OBS_DLL)
             set_target_properties(OBS::libobs PROPERTIES IMPORTED_LOCATION "${OBS_DLL}")
           endif()
+        else()
+          set_target_properties(OBS::libobs PROPERTIES IMPORTED_LOCATION "${OBS_LIB}")
         endif()
-        if(NOT TARGET OBS::obs-frontend-api)
-          add_library(OBS::obs-frontend-api SHARED IMPORTED GLOBAL)
-          set_target_properties(OBS::obs-frontend-api PROPERTIES
-            IMPORTED_IMPLIB "${OBS_FRONTEND_API_LIB}"
-            INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
-          )
+      endif()
+      if(NOT TARGET OBS::obs-frontend-api)
+        add_library(OBS::obs-frontend-api SHARED IMPORTED GLOBAL)
+        set_target_properties(OBS::obs-frontend-api PROPERTIES
+          INTERFACE_INCLUDE_DIRECTORIES "${OBS_INCLUDE_DIR}"
+        )
+        if(WIN32)
+          set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_IMPLIB "${OBS_FRONTEND_API_LIB}")
           if(OBS_FRONTEND_API_DLL)
             set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_LOCATION "${OBS_FRONTEND_API_DLL}")
           endif()
+        else()
+          set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_LOCATION "${OBS_FRONTEND_API_LIB}")
         endif()
-        if(EXISTS "${OBS_SDK_DIR}/cmake/Qt6")
-          set(Qt6_DIR "${OBS_SDK_DIR}/cmake/Qt6" CACHE PATH "Qt6 cmake dir from OBS" FORCE)
-        endif()
-        set(libobs_FOUND TRUE)
-        set(obs-frontend-api_FOUND TRUE)
       endif()
+      if(EXISTS "${OBS_SDK_DIR}/cmake/Qt6")
+        set(Qt6_DIR "${OBS_SDK_DIR}/cmake/Qt6" CACHE PATH "Qt6 cmake dir from OBS" FORCE)
+      endif()
+      set(libobs_FOUND TRUE)
+      set(obs-frontend-api_FOUND TRUE)
+      break()
     endif()
-  endif()
+
+    unset(OBS_LIB CACHE)
+    unset(OBS_LIB)
+    unset(OBS_FRONTEND_API_LIB CACHE)
+    unset(OBS_FRONTEND_API_LIB)
+    unset(OBS_INCLUDE_DIR CACHE)
+    unset(OBS_INCLUDE_DIR)
+  endforeach()
 endif()
 
 if(NOT libobs_FOUND OR NOT obs-frontend-api_FOUND)
@@ -183,19 +268,19 @@ set(PLUGIN_HEADERS
 )
 
 # ── Target ──────────────────────────────────────────────────────────
-add_library(obs-titles MODULE
+add_library(obs-titler-pro MODULE
     ${PLUGIN_SOURCES}
     ${PLUGIN_HEADERS}
 )
 
-target_include_directories(obs-titles PRIVATE
+target_include_directories(obs-titler-pro PRIVATE
     src
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${PANGOCAIRO_INCLUDE_DIRS}
 )
 
-target_link_libraries(obs-titles PRIVATE
+target_link_libraries(obs-titler-pro PRIVATE
     OBS::libobs
     OBS::obs-frontend-api
     ${QT_LIBS}
@@ -206,45 +291,107 @@ target_link_libraries(obs-titles PRIVATE
 )
 
 if(CAIRO_CFLAGS_OTHER)
-  target_compile_options(obs-titles PRIVATE ${CAIRO_CFLAGS_OTHER})
+  target_compile_options(obs-titler-pro PRIVATE ${CAIRO_CFLAGS_OTHER})
 endif()
 if(PANGO_CFLAGS_OTHER)
-  target_compile_options(obs-titles PRIVATE ${PANGO_CFLAGS_OTHER})
+  target_compile_options(obs-titler-pro PRIVATE ${PANGO_CFLAGS_OTHER})
 endif()
 if(PANGOCAIRO_CFLAGS_OTHER)
-  target_compile_options(obs-titles PRIVATE ${PANGOCAIRO_CFLAGS_OTHER})
+  target_compile_options(obs-titler-pro PRIVATE ${PANGOCAIRO_CFLAGS_OTHER})
 endif()
 
 # ── Locale / data files ──────────────────────────────────────────────
-target_compile_definitions(obs-titles PRIVATE
-    PLUGIN_NAME="obs-titles"
+target_compile_definitions(obs-titler-pro PRIVATE
+    PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
     PLUGIN_VERSION="${PROJECT_VERSION}"
 )
 
 # ── OBS module helper (sets correct output name & install path) ──────
 # This macro is provided by the OBS cmake helpers:
-#   set_target_obs_bundle(obs-titles)
-# If building standalone:
-set_target_properties(obs-titles PROPERTIES
+#   set_target_obs_bundle(obs-titler-pro)
+# If building standalone, stage artifacts in OBS' user-plugin folder layout.
+set_target_properties(obs-titler-pro PROPERTIES
     PREFIX ""
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/obs-plugins"
+    LIBRARY_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
+foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
+  string(TOUPPER "${config}" config_upper)
+  set_target_properties(obs-titler-pro PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
+      RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
+      ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/lib/${config}")
+endforeach()
+
+add_custom_command(TARGET obs-titler-pro POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${OBS_TITLES_PACKAGE_DIR}/data"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/data/locale"
+            "${OBS_TITLES_PACKAGE_DIR}/data/locale"
+    COMMENT "Staging OBS plugin data files")
+
+if(WIN32)
+  # OBS loads third-party DLL dependencies from the plugin binary directory.
+  # Copy vcpkg-provided runtime DLLs into the staged folder so the plugin does
+  # not compile successfully but fail LoadLibrary at OBS startup.
+  set(OBS_TITLES_RUNTIME_DLL_DIRS)
+  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+         "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+  endif()
+  if(DEFINED _VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+         "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+  endif()
+  if(DEFINED ENV{VCPKG_ROOT})
+    if(DEFINED VCPKG_TARGET_TRIPLET)
+      list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+           "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/bin")
+    endif()
+    list(APPEND OBS_TITLES_RUNTIME_DLL_DIRS
+         "$ENV{VCPKG_ROOT}/installed/${OBS_TITLES_VCPKG_DEFAULT_TRIPLET}/bin")
+  endif()
+
+  set(OBS_TITLES_RUNTIME_DLLS)
+  list(REMOVE_DUPLICATES OBS_TITLES_RUNTIME_DLL_DIRS)
+  foreach(runtime_dir IN LISTS OBS_TITLES_RUNTIME_DLL_DIRS)
+    if(IS_DIRECTORY "${runtime_dir}")
+      file(GLOB runtime_dlls CONFIGURE_DEPENDS "${runtime_dir}/*.dll")
+      list(APPEND OBS_TITLES_RUNTIME_DLLS ${runtime_dlls})
+    endif()
+  endforeach()
+
+  if(OBS_TITLES_RUNTIME_DLLS)
+    list(REMOVE_DUPLICATES OBS_TITLES_RUNTIME_DLLS)
+    add_custom_command(TARGET obs-titler-pro POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                ${OBS_TITLES_RUNTIME_DLLS}
+                "$<TARGET_FILE_DIR:obs-titler-pro>"
+        COMMAND_EXPAND_LISTS
+        COMMENT "Copying Windows runtime DLL dependencies")
+    install(FILES ${OBS_TITLES_RUNTIME_DLLS}
+            DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
+  else()
+    message(WARNING
+      "No vcpkg runtime DLLs were found to bundle with obs-titler-pro. "
+      "If OBS reports that obs-titler-pro failed to load, ensure Qt/Cairo/Pango "
+      "runtime DLLs are next to the plugin binary or use build-windows.ps1.")
+  endif()
+endif()
 
 # ── Install ──────────────────────────────────────────────────────────
-if(UNIX AND NOT APPLE)
-    install(TARGETS obs-titles
-            LIBRARY DESTINATION lib/obs-plugins)
-elseif(APPLE)
-    install(TARGETS obs-titles
-            LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/obs-plugins)
-elseif(WIN32)
-    install(TARGETS obs-titles
-            DESTINATION obs-plugins/64bit)
-endif()
+# Install into the same user-plugin layout expected below the chosen prefix.
+# Example Windows prefix: C:/ProgramData/obs-studio/plugins
+# Example Linux prefix:   ~/.config/obs-studio/plugins
+install(TARGETS obs-titler-pro
+        RUNTIME DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR}
+        LIBRARY DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
 
 # ── Locale files ────────────────────────────────────────────────────
 install(DIRECTORY data/locale
-        DESTINATION data/obs-plugins/obs-titles)
+        DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────
-message(STATUS "obs-titles: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
+message(STATUS "OBS Titler Pro: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
