@@ -43,7 +43,10 @@ private slots:
     void on_add_template_center_title();
     void on_add_template_ticker();
     void on_duplicate();
+    void on_rename();
     void on_delete();
+    void on_export();
+    void on_import();
     void on_edit();
     void on_add_to_scene();
     void on_selection_changed();
@@ -65,7 +68,10 @@ private:
     QPushButton  *btn_add_    = nullptr;
     QPushButton  *btn_tpl_    = nullptr;
     QPushButton  *btn_dup_    = nullptr;
+    QPushButton  *btn_rename_ = nullptr;
     QPushButton  *btn_del_    = nullptr;
+    QPushButton  *btn_export_ = nullptr;
+    QPushButton  *btn_import_ = nullptr;
     QPushButton  *btn_edit_   = nullptr;
     QPushButton  *btn_scene_  = nullptr;
     QLabel       *status_lbl_ = nullptr;

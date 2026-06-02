@@ -23,6 +23,9 @@
 #include <QLineEdit>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QRegularExpression>
 
 namespace {
 
@@ -122,28 +125,40 @@ void TitleDock::build_ui()
     btn_add_  = new QPushButton("+",        container_);
     btn_tpl_  = new QPushButton("Templates", container_);
     btn_dup_  = new QPushButton("⧉",        container_);
+    btn_rename_ = new QPushButton("Rename", container_);
     btn_del_  = new QPushButton("✕",        container_);
+    btn_export_ = new QPushButton("Export", container_);
+    btn_import_ = new QPushButton("Import", container_);
     btn_edit_ = new QPushButton("Edit …",   container_);
     btn_scene_= new QPushButton("▶ Scene",  container_);
 
     btn_add_->setToolTip("New blank title");
     btn_tpl_->setToolTip("Create a title from a Titler-style template");
     btn_dup_->setToolTip("Duplicate");
+    btn_rename_->setToolTip("Rename selected title template");
     btn_del_->setToolTip("Delete");
+    btn_export_->setToolTip("Export selected title template to a file");
+    btn_import_->setToolTip("Import a title template file");
     btn_edit_->setToolTip("Open title editor");
     btn_scene_->setToolTip("Add selected title to current scene");
 
     for (auto *b : {btn_add_, btn_dup_, btn_del_})
         b->setFixedWidth(28);
     btn_tpl_->setFixedHeight(24);
+    btn_rename_->setFixedHeight(24);
+    btn_export_->setFixedHeight(24);
+    btn_import_->setFixedHeight(24);
     btn_edit_->setFixedHeight(24);
     btn_scene_->setFixedHeight(24);
 
     toolbar->addWidget(btn_add_);
     toolbar->addWidget(btn_tpl_);
+    toolbar->addWidget(btn_import_);
     toolbar->addWidget(btn_dup_);
     toolbar->addWidget(btn_del_);
     toolbar->addStretch();
+    toolbar->addWidget(btn_rename_);
+    toolbar->addWidget(btn_export_);
     toolbar->addWidget(btn_edit_);
     toolbar->addWidget(btn_scene_);
 
@@ -229,7 +244,10 @@ void TitleDock::build_ui()
 
     connect(btn_add_,   &QPushButton::clicked, this, &TitleDock::on_add);
     connect(btn_dup_,   &QPushButton::clicked, this, &TitleDock::on_duplicate);
+    connect(btn_rename_, &QPushButton::clicked, this, &TitleDock::on_rename);
     connect(btn_del_,   &QPushButton::clicked, this, &TitleDock::on_delete);
+    connect(btn_export_, &QPushButton::clicked, this, &TitleDock::on_export);
+    connect(btn_import_, &QPushButton::clicked, this, &TitleDock::on_import);
     connect(btn_edit_,  &QPushButton::clicked, this, &TitleDock::on_edit);
     connect(btn_scene_, &QPushButton::clicked, this, &TitleDock::on_add_to_scene);
     connect(btn_add_text_row_, &QPushButton::clicked, this, &TitleDock::on_add_live_text_row);
@@ -293,7 +311,9 @@ void TitleDock::on_selection_changed()
 {
     bool has = !selected_id().empty();
     btn_dup_->setEnabled(has);
+    btn_rename_->setEnabled(has);
     btn_del_->setEnabled(has);
+    btn_export_->setEnabled(has);
     btn_edit_->setEnabled(has);
     btn_scene_->setEnabled(has);
 
@@ -663,6 +683,69 @@ void TitleDock::on_duplicate()
     TitleDataStore::instance().notify_change();
     TitleDataStore::instance().save();
     select_title(dup->id);
+}
+
+void TitleDock::on_rename()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return;
+
+    bool ok = false;
+    QString name = QInputDialog::getText(
+        this, "Rename Title Template", "Template name:", QLineEdit::Normal,
+        QString::fromStdString(title->name), &ok);
+    name = name.trimmed();
+    if (!ok || name.isEmpty()) return;
+
+    TitleDataStore::instance().rename_title(title->id, name.toStdString());
+    TitleDataStore::instance().save();
+    select_title(title->id);
+}
+
+void TitleDock::on_export()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return;
+
+    QString safe_name = QString::fromStdString(title->name).trimmed();
+    if (safe_name.isEmpty()) safe_name = QStringLiteral("OBS Titler Pro Template");
+    safe_name.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|])")), QStringLiteral("_"));
+
+    QString path = QFileDialog::getSaveFileName(
+        this, "Export Title Template", safe_name + QStringLiteral(".otpt"),
+        "OBS Titler Pro Templates (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
+    if (path.isEmpty()) return;
+
+    if (QFileInfo(path).suffix().isEmpty())
+        path += QStringLiteral(".otpt");
+
+    std::string error;
+    if (!TitleDataStore::instance().export_title(title->id, path.toStdString(), &error)) {
+        QMessageBox::warning(this, "Export Title Template",
+                             QString::fromStdString(error));
+        return;
+    }
+
+    status_lbl_->setText(QString("Exported %1").arg(QFileInfo(path).fileName()));
+}
+
+void TitleDock::on_import()
+{
+    QString path = QFileDialog::getOpenFileName(
+        this, "Import Title Template", QString(),
+        "OBS Titler Pro Templates (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
+    if (path.isEmpty()) return;
+
+    std::string error;
+    auto imported = TitleDataStore::instance().import_title(path.toStdString(), &error);
+    if (!imported) {
+        QMessageBox::warning(this, "Import Title Template",
+                             QString::fromStdString(error));
+        return;
+    }
+
+    select_title(imported->id);
+    status_lbl_->setText(QString("Imported %1").arg(QString::fromStdString(imported->name)));
 }
 
 void TitleDock::on_delete()

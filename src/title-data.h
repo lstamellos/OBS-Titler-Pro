@@ -213,6 +213,11 @@ public:
     void                   delete_title(const std::string &id);
     void                   rename_title(const std::string &id,
                                         const std::string &name);
+    bool                   export_title(const std::string &id,
+                                        const std::string &path,
+                                        std::string *error = nullptr) const;
+    std::shared_ptr<Title> import_title(const std::string &path,
+                                        std::string *error = nullptr);
 
     const std::vector<std::shared_ptr<Title>> &titles() const { return titles_; }
 

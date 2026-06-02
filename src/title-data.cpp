@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <cmath>
 #include <algorithm>
+#include <unordered_map>
+#include <stdexcept>
 
 using json = nlohmann::json;
 
@@ -438,35 +440,156 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     return l;
 }
 
+static json title_to_json(const Title &t)
+{
+    json jt;
+    jt["id"]       = t.id;
+    jt["name"]     = t.name;
+    jt["duration"] = t.duration;
+    jt["loop_start"] = t.loop_start;
+    jt["loop_end"] = t.loop_end;
+    jt["bg_color"] = t.bg_color;
+    jt["width"]    = t.width;
+    jt["height"]   = t.height;
+    json layers = json::array();
+    for (auto &l : t.layers)
+        layers.push_back(layer_to_json(*l));
+    jt["layers"] = layers;
+    json live_rows = json::array();
+    for (const auto &row : t.live_text_rows)
+        live_rows.push_back(row);
+    jt["live_text_rows"] = live_rows;
+    return jt;
+}
+
+static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_ids)
+{
+    auto t = std::make_shared<Title>();
+    t->id       = jt.value("id",       TitleDataStore::make_uuid());
+    t->name     = jt.value("name",     "Untitled");
+    t->duration = jt.value("duration", 5.0);
+    t->loop_start = std::clamp(jt.value("loop_start", std::min(1.0, t->duration)), 0.0, t->duration);
+    t->loop_end = std::clamp(jt.value("loop_end", std::max(t->loop_start, t->duration - 1.0)), t->loop_start, t->duration);
+    t->bg_color = jt.value("bg_color", (uint32_t)0x00000000);
+    t->width    = jt.value("width",    1920);
+    t->height   = jt.value("height",   1080);
+    if (jt.contains("layers"))
+        for (auto &lj : jt["layers"])
+            t->layers.push_back(layer_from_json(lj));
+    if (jt.contains("live_text_rows")) {
+        for (const auto &jr : jt["live_text_rows"]) {
+            std::vector<std::string> row;
+            for (const auto &cell : jr)
+                row.push_back(cell.get<std::string>());
+            t->live_text_rows.push_back(std::move(row));
+        }
+    }
+
+    if (regenerate_ids) {
+        std::unordered_map<std::string, std::string> layer_id_map;
+        t->id = TitleDataStore::make_uuid();
+        for (auto &layer : t->layers) {
+            std::string old_id = layer->id;
+            layer->id = TitleDataStore::make_uuid();
+            if (!old_id.empty())
+                layer_id_map[old_id] = layer->id;
+        }
+        for (auto &layer : t->layers) {
+            auto it = layer_id_map.find(layer->parent_id);
+            if (it != layer_id_map.end())
+                layer->parent_id = it->second;
+            else if (!layer->parent_id.empty())
+                layer->parent_id.clear();
+        }
+    }
+
+    return t;
+}
+
 void TitleDataStore::save() const
 {
     json root = json::array();
-    for (auto &t : titles_) {
-        json jt;
-        jt["id"]       = t->id;
-        jt["name"]     = t->name;
-        jt["duration"] = t->duration;
-        jt["loop_start"] = t->loop_start;
-        jt["loop_end"] = t->loop_end;
-        jt["bg_color"] = t->bg_color;
-        jt["width"]    = t->width;
-        jt["height"]   = t->height;
-        json layers = json::array();
-        for (auto &l : t->layers)
-            layers.push_back(layer_to_json(*l));
-        jt["layers"] = layers;
-        json live_rows = json::array();
-        for (const auto &row : t->live_text_rows)
-            live_rows.push_back(row);
-        jt["live_text_rows"] = live_rows;
-        root.push_back(jt);
-    }
+    for (auto &t : titles_)
+        root.push_back(title_to_json(*t));
 
     std::ofstream f(data_path());
     if (f.is_open())
         f << root.dump(2);
     else
         blog(LOG_WARNING, "[OBS Titler Pro] Failed to save titles.json");
+}
+
+bool TitleDataStore::export_title(const std::string &id, const std::string &path, std::string *error) const
+{
+    auto t = get_title(id);
+    if (!t) {
+        if (error) *error = "No title template is selected.";
+        return false;
+    }
+
+    json root;
+    root["format"] = "obs-titler-pro-title-template";
+    root["version"] = 1;
+    root["title"] = title_to_json(*t);
+
+    std::ofstream f(path);
+    if (!f.is_open()) {
+        if (error) *error = "Could not open the export file for writing.";
+        return false;
+    }
+    f << root.dump(2);
+    if (!f.good()) {
+        if (error) *error = "Failed while writing the export file.";
+        return false;
+    }
+    return true;
+}
+
+std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std::string *error)
+{
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        if (error) *error = "Could not open the template file.";
+        return nullptr;
+    }
+
+    try {
+        json root;
+        f >> root;
+        json jt;
+        if (root.is_object() && root.contains("title"))
+            jt = root["title"];
+        else if (root.is_array() && !root.empty())
+            jt = root.front();
+        else if (root.is_object())
+            jt = root;
+        else
+            throw std::runtime_error("Unsupported template file format.");
+
+        auto imported = title_from_json(jt, true);
+        if (!imported)
+            throw std::runtime_error("Template data was empty.");
+
+        std::string base_name = imported->name.empty() ? "Imported Title" : imported->name;
+        std::string unique_name = base_name;
+        int suffix = 2;
+        auto name_exists = [this](const std::string &candidate) {
+            return std::any_of(titles_.begin(), titles_.end(), [&](const auto &existing) {
+                return existing && existing->name == candidate;
+            });
+        };
+        while (name_exists(unique_name))
+            unique_name = base_name + " (imported " + std::to_string(suffix++) + ")";
+        imported->name = unique_name;
+
+        titles_.push_back(imported);
+        notify_change();
+        save();
+        return imported;
+    } catch (const std::exception &e) {
+        if (error) *error = e.what();
+        return nullptr;
+    }
 }
 
 void TitleDataStore::load()
@@ -480,29 +603,8 @@ void TitleDataStore::load()
     try {
         json root;
         f >> root;
-        for (auto &jt : root) {
-            auto t = std::make_shared<Title>();
-            t->id       = jt.value("id",       TitleDataStore::make_uuid());
-            t->name     = jt.value("name",     "Untitled");
-            t->duration = jt.value("duration", 5.0);
-            t->loop_start = std::clamp(jt.value("loop_start", std::min(1.0, t->duration)), 0.0, t->duration);
-            t->loop_end = std::clamp(jt.value("loop_end", std::max(t->loop_start, t->duration - 1.0)), t->loop_start, t->duration);
-            t->bg_color = jt.value("bg_color", (uint32_t)0x00000000);
-            t->width    = jt.value("width",    1920);
-            t->height   = jt.value("height",   1080);
-            if (jt.contains("layers"))
-                for (auto &lj : jt["layers"])
-                    t->layers.push_back(layer_from_json(lj));
-            if (jt.contains("live_text_rows")) {
-                for (const auto &jr : jt["live_text_rows"]) {
-                    std::vector<std::string> row;
-                    for (const auto &cell : jr)
-                        row.push_back(cell.get<std::string>());
-                    t->live_text_rows.push_back(std::move(row));
-                }
-            }
-            titles_.push_back(t);
-        }
+        for (auto &jt : root)
+            titles_.push_back(title_from_json(jt, false));
         blog(LOG_INFO, "[OBS Titler Pro] Loaded %zu title(s).", titles_.size());
     } catch (std::exception &e) {
         blog(LOG_WARNING, "[OBS Titler Pro] Failed to parse titles.json: %s", e.what());
