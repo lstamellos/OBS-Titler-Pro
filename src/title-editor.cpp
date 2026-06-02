@@ -1683,6 +1683,20 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         }
     }
 
+    if (title_) {
+        int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, dur));
+        int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, dur));
+        if (loop_x1 > loop_x0) {
+            p.fillRect(loop_x0, 18, loop_x1 - loop_x0, rh - 18, QColor(0x00, 0x78, 0xd4, 45));
+            p.setPen(QPen(QColor(0x20, 0xa0, 0xff), 2));
+            p.drawLine(loop_x0, 18, loop_x0, H);
+            p.drawLine(loop_x1, 18, loop_x1, H);
+            p.setPen(QColor(0xa8, 0xd8, 0xff));
+            p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop in");
+            p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop out");
+        }
+    }
+
     /* Layer/property rows.  This uses the same row model as LayerStack so
      * keyframed property rows stay vertically aligned with the layer list.
      */
@@ -1890,6 +1904,20 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     drag_start_out_ = 0.0;
 
     if (ev->pos().y() < ruler_height()) {
+        int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, title_->duration));
+        int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, title_->duration));
+        if (std::abs(ev->pos().x() - loop_x0) <= 8) {
+            drag_mode_ = DragMode::LoopStart;
+            setCursor(Qt::SizeHorCursor);
+            ev->accept();
+            return;
+        }
+        if (std::abs(ev->pos().x() - loop_x1) <= 8) {
+            drag_mode_ = DragMode::LoopEnd;
+            setCursor(Qt::SizeHorCursor);
+            ev->accept();
+            return;
+        }
         drag_mode_ = DragMode::Playhead;
         double t = std::clamp(x_to_time(ev->pos().x()), 0.0, title_->duration);
         emit playhead_changed(t);
@@ -1954,6 +1982,18 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if (drag_mode_ == DragMode::LoopStart) {
+        title_->loop_start = std::clamp(t, 0.0, title_->loop_end);
+        update();
+        return;
+    }
+
+    if (drag_mode_ == DragMode::LoopEnd) {
+        title_->loop_end = std::clamp(t, title_->loop_start, title_->duration);
+        update();
+        return;
+    }
+
     if (drag_mode_ == DragMode::Keyframe) {
         auto layer = title_->find_layer(drag_layer_id_);
         if (!layer) return;
@@ -2011,7 +2051,9 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
     bool changed = drag_mode_ == DragMode::Keyframe ||
                    drag_mode_ == DragMode::TrimIn ||
                    drag_mode_ == DragMode::TrimOut ||
-                   drag_mode_ == DragMode::Layer;
+                   drag_mode_ == DragMode::Layer ||
+                   drag_mode_ == DragMode::LoopStart ||
+                   drag_mode_ == DragMode::LoopEnd;
     if (drag_mode_ == DragMode::Keyframe && title_) {
         if (auto layer = title_->find_layer(drag_layer_id_)) {
             for (auto *prop : timeline_properties(*layer)) {
@@ -2058,6 +2100,22 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_duration_->setSuffix(" s");
     fl->addRow("Length:", spn_duration_);
 
+    spn_loop_start_ = new QDoubleSpinBox(this);
+    spn_loop_start_->setRange(0.0, 3600.0);
+    spn_loop_start_->setSingleStep(0.5);
+    spn_loop_start_->setDecimals(2);
+    spn_loop_start_->setSuffix(" s");
+    spn_loop_start_->setToolTip("Cue playback runs from 0 to this point, then loops from here.");
+    fl->addRow("Loop start:", spn_loop_start_);
+
+    spn_loop_end_ = new QDoubleSpinBox(this);
+    spn_loop_end_->setRange(0.0, 3600.0);
+    spn_loop_end_->setSingleStep(0.5);
+    spn_loop_end_->setDecimals(2);
+    spn_loop_end_->setSuffix(" s");
+    spn_loop_end_->setToolTip("Cue playback loops until this point; the next cue plays from here to the end.");
+    fl->addRow("Loop end:", spn_loop_end_);
+
     connect(spn_duration_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double v) {
                 if (!title_ || loading_values_) return;
@@ -2067,6 +2125,26 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                     if (std::abs(layer->out_time - old_duration) < 0.001 || layer->out_time > v)
                         layer->out_time = v;
                 }
+                title_->loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
+                title_->loop_end = std::clamp(title_->loop_end, title_->loop_start, title_->duration);
+                load_values();
+                emit title_changed();
+            });
+
+    connect(spn_loop_start_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                if (!title_ || loading_values_) return;
+                title_->loop_start = std::clamp(v, 0.0, title_->duration);
+                title_->loop_end = std::clamp(title_->loop_end, title_->loop_start, title_->duration);
+                load_values();
+                emit title_changed();
+            });
+
+    connect(spn_loop_end_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                if (!title_ || loading_values_) return;
+                title_->loop_end = std::clamp(v, title_->loop_start, title_->duration);
+                load_values();
                 emit title_changed();
             });
 }
@@ -2080,7 +2158,14 @@ void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
 void TitlePropertiesPanel::load_values()
 {
     loading_values_ = true;
-    spn_duration_->setValue(title_ ? title_->duration : 5.0);
+    double duration = title_ ? title_->duration : 5.0;
+    double loop_start = title_ ? title_->loop_start : 1.0;
+    double loop_end = title_ ? title_->loop_end : 4.0;
+    spn_duration_->setValue(duration);
+    spn_loop_start_->setMaximum(duration);
+    spn_loop_end_->setMaximum(duration);
+    spn_loop_start_->setValue(std::clamp(loop_start, 0.0, duration));
+    spn_loop_end_->setValue(std::clamp(loop_end, std::clamp(loop_start, 0.0, duration), duration));
     loading_values_ = false;
 }
 

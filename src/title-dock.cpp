@@ -22,6 +22,40 @@
 #include <QHeaderView>
 #include <QLineEdit>
 #include <QSignalBlocker>
+#include <QSplitter>
+
+namespace {
+
+static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared_ptr<Title> &title)
+{
+    std::vector<std::shared_ptr<Layer>> exposed;
+    if (!title) return exposed;
+    for (const auto &layer : title->layers) {
+        if (layer->type == LayerType::Text && layer->expose_text)
+            exposed.push_back(layer);
+    }
+    return exposed;
+}
+
+static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
+                                     const std::vector<std::shared_ptr<Layer>> &exposed)
+{
+    if (!title || exposed.empty()) return;
+    if (title->live_text_rows.empty()) {
+        std::vector<std::string> row;
+        for (const auto &layer : exposed)
+            row.push_back(layer->text_content);
+        title->live_text_rows.push_back(std::move(row));
+    }
+    for (auto &row : title->live_text_rows) {
+        size_t old_size = row.size();
+        row.resize(exposed.size());
+        for (size_t i = old_size; i < exposed.size(); ++i)
+            row[i] = exposed[i]->text_content;
+    }
+}
+
+} // namespace
 
 /* ══════════════════════════════════════════════════════════════════
  *  Constructor
@@ -85,16 +119,58 @@ void TitleDock::build_ui()
     toolbar->addWidget(btn_scene_);
     root->addLayout(toolbar);
 
-    /* ── template/title section ── */
-    auto *template_lbl = new QLabel("Title templates", container_);
-    template_lbl->setStyleSheet("font-weight:bold;color:#ddd;");
-    root->addWidget(template_lbl);
+    auto *sections = new QSplitter(Qt::Vertical, container_);
+    sections->setChildrenCollapsible(false);
+    root->addWidget(sections, 1);
 
-    list_ = new QListWidget(container_);
+    auto *template_section = new QWidget(sections);
+    auto *template_layout = new QVBoxLayout(template_section);
+    template_layout->setContentsMargins(0, 0, 0, 0);
+    template_layout->setSpacing(4);
+
+    /* ── template/title section ── */
+    auto *template_lbl = new QLabel("Title templates", template_section);
+    template_lbl->setStyleSheet("font-weight:bold;color:#ddd;");
+    template_layout->addWidget(template_lbl);
+
+    list_ = new QListWidget(template_section);
     list_->setAlternatingRowColors(true);
     list_->setSelectionMode(QAbstractItemView::SingleSelection);
     list_->setMinimumHeight(120);
-    root->addWidget(list_, 1);
+    template_layout->addWidget(list_, 1);
+
+    auto *live_section = new QWidget(sections);
+    auto *live_layout = new QVBoxLayout(live_section);
+    live_layout->setContentsMargins(0, 0, 0, 0);
+    live_layout->setSpacing(4);
+
+    auto *live_header = new QHBoxLayout();
+    /* ── exposed text section ── */
+    text_editor_lbl_ = new QLabel("Live text", live_section);
+    text_editor_lbl_->setStyleSheet("font-weight:bold;color:#ddd;margin-top:4px;");
+    btn_add_text_row_ = new QPushButton("+ Row", live_section);
+    btn_add_text_row_->setToolTip("Add another live text cue row");
+    btn_add_text_row_->setFixedHeight(22);
+    live_header->addWidget(text_editor_lbl_);
+    live_header->addStretch();
+    live_header->addWidget(btn_add_text_row_);
+    live_layout->addLayout(live_header);
+
+    text_table_ = new QTableWidget(live_section);
+    text_table_->setMinimumHeight(96);
+    text_table_->setAlternatingRowColors(false);
+    text_table_->verticalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    text_table_->verticalHeader()->setDefaultSectionSize(30);
+    text_table_->horizontalHeader()->setStretchLastSection(false);
+    text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    text_table_->setSelectionMode(QAbstractItemView::NoSelection);
+    text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    live_layout->addWidget(text_table_, 1);
+
+    sections->addWidget(template_section);
+    sections->addWidget(live_section);
+    sections->setStretchFactor(0, 2);
+    sections->setStretchFactor(1, 1);
 
     /* ── exposed text section ── */
     text_editor_lbl_ = new QLabel("Live text", container_);
@@ -134,6 +210,7 @@ void TitleDock::build_ui()
     connect(btn_del_,   &QPushButton::clicked, this, &TitleDock::on_delete);
     connect(btn_edit_,  &QPushButton::clicked, this, &TitleDock::on_edit);
     connect(btn_scene_, &QPushButton::clicked, this, &TitleDock::on_add_to_scene);
+    connect(btn_add_text_row_, &QPushButton::clicked, this, &TitleDock::on_add_live_text_row);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &TitleDock::on_selection_changed);
     connect(list_, &QListWidget::itemDoubleClicked,
@@ -216,47 +293,107 @@ void TitleDock::populate_exposed_text()
     if (!text_table_) return;
     QSignalBlocker block(text_table_);
     text_table_->clear();
-    text_table_->setRowCount(1);
+    text_table_->setRowCount(0);
     text_table_->setColumnCount(0);
 
     auto title = TitleDataStore::instance().get_title(selected_id());
     if (!title) {
         text_editor_lbl_->setText("Live text — select a title");
         text_table_->setEnabled(false);
+        if (btn_add_text_row_) btn_add_text_row_->setEnabled(false);
         return;
     }
 
-    std::vector<std::shared_ptr<Layer>> exposed;
-    for (const auto &layer : title->layers) {
-        if (layer->type == LayerType::Text && layer->expose_text)
-            exposed.push_back(layer);
-    }
+    auto exposed = exposed_text_layers(title);
+    normalize_live_text_rows(title, exposed);
 
-    text_table_->setEnabled(!exposed.empty());
-    text_editor_lbl_->setText(exposed.empty()
-        ? "Live text — expose text layers in the editor"
-        : "Live text");
-    text_table_->setColumnCount((int)exposed.size());
+    const bool has_exposed = !exposed.empty();
+    text_table_->setEnabled(has_exposed);
+    if (btn_add_text_row_) btn_add_text_row_->setEnabled(has_exposed);
+    text_editor_lbl_->setText(has_exposed
+        ? "Live text cues"
+        : "Live text — expose text layers in the editor");
+    if (!has_exposed) return;
+
+    text_table_->setRowCount((int)title->live_text_rows.size());
+    text_table_->setColumnCount((int)exposed.size() + 2);
 
     QStringList headers;
     for (const auto &layer : exposed)
         headers << QString::fromStdString(layer->name);
+    headers << "Cue" << "Delete";
     text_table_->setHorizontalHeaderLabels(headers);
+    for (int col = 0; col < (int)exposed.size(); ++col)
+        text_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
+    text_table_->horizontalHeader()->setSectionResizeMode((int)exposed.size(), QHeaderView::ResizeToContents);
+    text_table_->horizontalHeader()->setSectionResizeMode((int)exposed.size() + 1, QHeaderView::ResizeToContents);
 
-    for (int col = 0; col < (int)exposed.size(); ++col) {
-        auto layer = exposed[col];
-        auto *edit = new QLineEdit(QString::fromStdString(layer->text_content), text_table_);
-        edit->setPlaceholderText(QString::fromStdString(layer->name));
-        edit->setStyleSheet("QLineEdit{padding:3px;}");
-        connect(edit, &QLineEdit::textEdited, this, [this, layer](const QString &text) {
+    for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
+        text_table_->setVerticalHeaderItem(row, new QTableWidgetItem(QString::number(row + 1)));
+        for (int col = 0; col < (int)exposed.size(); ++col) {
+            auto *edit = new QLineEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+            edit->setPlaceholderText(QString::fromStdString(exposed[col]->name));
+            edit->setStyleSheet("QLineEdit{padding:3px;}");
+            connect(edit, &QLineEdit::textEdited, this, [this, title, row, col](const QString &text) {
+                if (row < 0 || row >= (int)title->live_text_rows.size() ||
+                    col < 0 || col >= (int)title->live_text_rows[row].size()) return;
+                updating_exposed_text_ = true;
+                title->live_text_rows[row][col] = text.toStdString();
+                TitleDataStore::instance().save();
+                TitleDataStore::instance().notify_change();
+                updating_exposed_text_ = false;
+            });
+            text_table_->setCellWidget(row, col, edit);
+        }
+
+        auto *cue = new QPushButton("Cue", text_table_);
+        cue->setToolTip("Cue this row: apply its text and run intro/loop/outro animation");
+        connect(cue, &QPushButton::clicked, this, [this, title, row]() {
+            auto exposed_now = exposed_text_layers(title);
+            normalize_live_text_rows(title, exposed_now);
+            if (row < 0 || row >= (int)title->live_text_rows.size()) return;
             updating_exposed_text_ = true;
-            layer->text_content = text.toStdString();
+            for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col)
+                exposed_now[col]->text_content = title->live_text_rows[row][col];
+            ++title->cue_revision;
             TitleDataStore::instance().save();
             TitleDataStore::instance().notify_change();
             updating_exposed_text_ = false;
+            populate_exposed_text();
         });
-        text_table_->setCellWidget(0, col, edit);
+        text_table_->setCellWidget(row, (int)exposed.size(), cue);
+
+        auto *del = new QPushButton("✕", text_table_);
+        del->setToolTip("Delete this live text row");
+        connect(del, &QPushButton::clicked, this, [this, title, row]() {
+            if (row < 0 || row >= (int)title->live_text_rows.size()) return;
+            updating_exposed_text_ = true;
+            title->live_text_rows.erase(title->live_text_rows.begin() + row);
+            auto exposed_now = exposed_text_layers(title);
+            normalize_live_text_rows(title, exposed_now);
+            TitleDataStore::instance().save();
+            TitleDataStore::instance().notify_change();
+            updating_exposed_text_ = false;
+            populate_exposed_text();
+        });
+        text_table_->setCellWidget(row, (int)exposed.size() + 1, del);
     }
+}
+
+void TitleDock::on_add_live_text_row()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return;
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty()) return;
+
+    std::vector<std::string> row;
+    for (const auto &layer : exposed)
+        row.push_back(layer->text_content);
+    title->live_text_rows.push_back(std::move(row));
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
 }
 
 

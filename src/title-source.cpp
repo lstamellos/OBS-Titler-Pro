@@ -46,9 +46,13 @@ struct TitleSourceData {
     float       speed        = 1.0f;
     bool        auto_advance = false;  /* future: playlist mode */
 
+    enum class CuePhase { FreeRun, IntroLoop, OutroThenIntro };
+
     /* Playback state */
     double      playhead     = 0.0;    /* seconds */
     bool        playing      = true;
+    uint64_t    seen_cue_revision = 0;
+    CuePhase    cue_phase    = CuePhase::FreeRun;
     std::chrono::steady_clock::time_point last_tick;
     bool        first_tick   = true;
 
@@ -410,11 +414,35 @@ static void source_video_tick(void *priv, float seconds)
     auto title = TitleDataStore::instance().get_title(data->title_id);
     if (!title) return;
 
+    if (title->cue_revision != data->seen_cue_revision) {
+        double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
+        data->playhead = data->seen_cue_revision == 0 ? 0.0 : loop_end;
+        data->seen_cue_revision = title->cue_revision;
+        data->cue_phase = data->seen_cue_revision == 0
+            ? TitleSourceData::CuePhase::FreeRun
+            : (data->playhead > 0.0
+                ? TitleSourceData::CuePhase::OutroThenIntro
+                : TitleSourceData::CuePhase::IntroLoop);
+        data->playing = true;
+        data->dirty = true;
+    }
+
     if (data->playing) {
         data->playhead += (double)seconds * data->speed;
-        if (data->playhead >= title->duration) {
+        double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
+        double loop_end = std::clamp(title->loop_end, loop_start, title->duration);
+
+        if (data->cue_phase == TitleSourceData::CuePhase::IntroLoop && loop_end > loop_start &&
+            data->playhead >= loop_end) {
+            data->playhead = loop_start + std::fmod(data->playhead - loop_start,
+                                                    std::max(0.001, loop_end - loop_start));
+        } else if (data->cue_phase == TitleSourceData::CuePhase::OutroThenIntro &&
+                   data->playhead >= title->duration) {
+            data->playhead = 0.0;
+            data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+        } else if (data->playhead >= title->duration) {
             if (data->loop) {
-                data->playhead = std::fmod(data->playhead, title->duration);
+                data->playhead = std::fmod(data->playhead, std::max(0.001, title->duration));
             } else {
                 data->playhead = title->duration;
                 data->playing  = false;
@@ -422,6 +450,7 @@ static void source_video_tick(void *priv, float seconds)
         }
         data->dirty = true;
     }
+
 
     uint64_t revision = TitleDataStore::instance().revision();
     if (revision != data->seen_store_revision) {

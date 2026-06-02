@@ -160,11 +160,15 @@ struct Title {
     std::string id;
     std::string name        = "Untitled";
     double      duration    = 5.0;   /* total clip duration (seconds) */
+    double      loop_start  = 1.0;   /* live-cue loop start (seconds) */
+    double      loop_end    = 4.0;   /* live-cue loop end (seconds) */
     uint32_t    bg_color    = 0x00000000;  /* transparent by default */
     int         width       = 1920;
     int         height      = 1080;
 
     std::vector<std::shared_ptr<Layer>> layers;  /* bottom → top order */
+    std::vector<std::vector<std::string>> live_text_rows;
+    uint64_t cue_revision = 0; /* runtime-only live text cue counter */
 
     /* Helpers */
     std::shared_ptr<Layer> find_layer(const std::string &layer_id) const;

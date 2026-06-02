@@ -397,6 +397,8 @@ void TitleDataStore::save() const
         jt["id"]       = t->id;
         jt["name"]     = t->name;
         jt["duration"] = t->duration;
+        jt["loop_start"] = t->loop_start;
+        jt["loop_end"] = t->loop_end;
         jt["bg_color"] = t->bg_color;
         jt["width"]    = t->width;
         jt["height"]   = t->height;
@@ -404,6 +406,10 @@ void TitleDataStore::save() const
         for (auto &l : t->layers)
             layers.push_back(layer_to_json(*l));
         jt["layers"] = layers;
+        json live_rows = json::array();
+        for (const auto &row : t->live_text_rows)
+            live_rows.push_back(row);
+        jt["live_text_rows"] = live_rows;
         root.push_back(jt);
     }
 
@@ -430,12 +436,22 @@ void TitleDataStore::load()
             t->id       = jt.value("id",       TitleDataStore::make_uuid());
             t->name     = jt.value("name",     "Untitled");
             t->duration = jt.value("duration", 5.0);
+            t->loop_start = std::clamp(jt.value("loop_start", std::min(1.0, t->duration)), 0.0, t->duration);
+            t->loop_end = std::clamp(jt.value("loop_end", std::max(t->loop_start, t->duration - 1.0)), t->loop_start, t->duration);
             t->bg_color = jt.value("bg_color", (uint32_t)0x00000000);
             t->width    = jt.value("width",    1920);
             t->height   = jt.value("height",   1080);
             if (jt.contains("layers"))
                 for (auto &lj : jt["layers"])
                     t->layers.push_back(layer_from_json(lj));
+            if (jt.contains("live_text_rows")) {
+                for (const auto &jr : jt["live_text_rows"]) {
+                    std::vector<std::string> row;
+                    for (const auto &cell : jr)
+                        row.push_back(cell.get<std::string>());
+                    t->live_text_rows.push_back(std::move(row));
+                }
+            }
             titles_.push_back(t);
         }
         blog(LOG_INFO, "[OBS Titler Pro] Loaded %zu title(s).", titles_.size());

@@ -17,6 +17,7 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QTableWidget>
+#include <QSplitter>
 #include <QPushButton>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -46,6 +47,7 @@ private slots:
     void on_edit();
     void on_add_to_scene();
     void on_selection_changed();
+    void on_add_live_text_row();
 
 private:
     void build_ui();
@@ -67,6 +69,7 @@ private:
     QLabel       *status_lbl_ = nullptr;
     QLabel       *text_editor_lbl_ = nullptr;
     QTableWidget *text_table_ = nullptr;
+    QPushButton  *btn_add_text_row_ = nullptr;
     bool          updating_exposed_text_ = false;
 
     TitleEditor  *editor_     = nullptr;

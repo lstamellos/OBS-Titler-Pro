@@ -256,7 +256,7 @@ private:
     bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
                         AnimatedProperty **prop, int *kf_idx, int *row_idx) const;
 
-    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut, Layer };
+    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut, Layer, LoopStart, LoopEnd };
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -291,6 +291,8 @@ private:
     std::shared_ptr<Title> title_;
     bool loading_values_ = false;
     QDoubleSpinBox *spn_duration_ = nullptr;
+    QDoubleSpinBox *spn_loop_start_ = nullptr;
+    QDoubleSpinBox *spn_loop_end_ = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
