@@ -55,6 +55,12 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
     }
 }
 
+static void move_live_row_marker(int &marker, int from, int to)
+{
+    if (marker == from) marker = to;
+    else if (marker == to) marker = from;
+}
+
 } // namespace
 
 /* ══════════════════════════════════════════════════════════════════
@@ -151,8 +157,16 @@ void TitleDock::build_ui()
     btn_add_text_row_ = new QPushButton("+ Row", live_section);
     btn_add_text_row_->setToolTip("Add another live text cue row");
     btn_add_text_row_->setFixedHeight(22);
+    btn_row_up_ = new QPushButton("▲", live_section);
+    btn_row_up_->setToolTip("Move selected cue row up");
+    btn_row_up_->setFixedSize(24, 22);
+    btn_row_down_ = new QPushButton("▼", live_section);
+    btn_row_down_->setToolTip("Move selected cue row down");
+    btn_row_down_->setFixedSize(24, 22);
     live_header->addWidget(text_editor_lbl_);
     live_header->addStretch();
+    live_header->addWidget(btn_row_up_);
+    live_header->addWidget(btn_row_down_);
     live_header->addWidget(btn_add_text_row_);
     live_layout->addLayout(live_header);
 
@@ -163,7 +177,8 @@ void TitleDock::build_ui()
     text_table_->verticalHeader()->setDefaultSectionSize(30);
     text_table_->horizontalHeader()->setStretchLastSection(false);
     text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    text_table_->setSelectionMode(QAbstractItemView::NoSelection);
+    text_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    text_table_->setSelectionMode(QAbstractItemView::SingleSelection);
     text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     live_layout->addWidget(text_table_, 1);
 
@@ -195,6 +210,8 @@ void TitleDock::build_ui()
     connect(btn_edit_,  &QPushButton::clicked, this, &TitleDock::on_edit);
     connect(btn_scene_, &QPushButton::clicked, this, &TitleDock::on_add_to_scene);
     connect(btn_add_text_row_, &QPushButton::clicked, this, &TitleDock::on_add_live_text_row);
+    connect(btn_row_up_, &QPushButton::clicked, this, &TitleDock::on_move_live_text_row_up);
+    connect(btn_row_down_, &QPushButton::clicked, this, &TitleDock::on_move_live_text_row_down);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &TitleDock::on_selection_changed);
     connect(list_, &QListWidget::itemDoubleClicked,
@@ -285,6 +302,8 @@ void TitleDock::populate_exposed_text()
         text_editor_lbl_->setText("Live text — select a title");
         text_table_->setEnabled(false);
         if (btn_add_text_row_) btn_add_text_row_->setEnabled(false);
+        if (btn_row_up_) btn_row_up_->setEnabled(false);
+        if (btn_row_down_) btn_row_down_->setEnabled(false);
         return;
     }
 
@@ -294,6 +313,8 @@ void TitleDock::populate_exposed_text()
     const bool has_exposed = !exposed.empty();
     text_table_->setEnabled(has_exposed);
     if (btn_add_text_row_) btn_add_text_row_->setEnabled(has_exposed);
+    if (btn_row_up_) btn_row_up_->setEnabled(has_exposed);
+    if (btn_row_down_) btn_row_down_->setEnabled(has_exposed);
     text_editor_lbl_->setText(has_exposed
         ? "Live text cues"
         : "Live text — expose text layers in the editor");
@@ -332,19 +353,31 @@ void TitleDock::populate_exposed_text()
 
         auto *cue = new QPushButton("▶", text_table_);
         cue->setToolTip("Play this row and run the intro/loop/outro animation");
-        cue->setStyleSheet(row == title->current_cue_row
-            ? "QPushButton{background:#b02020;color:white;border:none;border-radius:3px;font-weight:bold;}"
-              "QPushButton:hover{background:#d03030;}"
-            : "QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
-              "QPushButton:hover{background:#3a3a3a;}");
+        QString cue_style;
+        if (row == title->current_cue_row) {
+            cue_style = "QPushButton{background:#b02020;color:white;border:none;border-radius:3px;font-weight:bold;}"
+                        "QPushButton:hover{background:#d03030;}";
+        } else if (row == title->pending_cue_row) {
+            cue_style = "QPushButton{background:#1d8f3a;color:white;border:none;border-radius:3px;font-weight:bold;}"
+                        "QPushButton:hover{background:#28b84f;}";
+        } else {
+            cue_style = "QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
+                        "QPushButton:hover{background:#3a3a3a;}";
+        }
+        cue->setStyleSheet(cue_style);
         connect(cue, &QPushButton::clicked, this, [this, title, row]() {
             auto exposed_now = exposed_text_layers(title);
             normalize_live_text_rows(title, exposed_now);
             if (row < 0 || row >= (int)title->live_text_rows.size()) return;
             updating_exposed_text_ = true;
-            for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col)
-                exposed_now[col]->text_content = title->live_text_rows[row][col];
-            title->current_cue_row = row;
+            if (title->current_cue_row >= 0 && title->current_cue_row != row) {
+                title->pending_cue_row = row;
+            } else {
+                for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col)
+                    exposed_now[col]->text_content = title->live_text_rows[row][col];
+                title->current_cue_row = row;
+                title->pending_cue_row = -1;
+            }
             ++title->cue_revision;
             TitleDataStore::instance().save();
             TitleDataStore::instance().notify_change();
@@ -363,6 +396,10 @@ void TitleDock::populate_exposed_text()
                 title->current_cue_row = -1;
             else if (title->current_cue_row > row)
                 --title->current_cue_row;
+            if (title->pending_cue_row == row)
+                title->pending_cue_row = -1;
+            else if (title->pending_cue_row > row)
+                --title->pending_cue_row;
             auto exposed_now = exposed_text_layers(title);
             normalize_live_text_rows(title, exposed_now);
             TitleDataStore::instance().save();
@@ -388,6 +425,37 @@ void TitleDock::on_add_live_text_row()
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
     populate_exposed_text();
+    text_table_->selectRow((int)title->live_text_rows.size() - 1);
+}
+
+void TitleDock::on_move_live_text_row_up()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title || !text_table_) return;
+    int row = text_table_->currentRow();
+    if (row <= 0 || row >= (int)title->live_text_rows.size()) return;
+    std::swap(title->live_text_rows[row], title->live_text_rows[row - 1]);
+    move_live_row_marker(title->current_cue_row, row, row - 1);
+    move_live_row_marker(title->pending_cue_row, row, row - 1);
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    text_table_->selectRow(row - 1);
+}
+
+void TitleDock::on_move_live_text_row_down()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title || !text_table_) return;
+    int row = text_table_->currentRow();
+    if (row < 0 || row + 1 >= (int)title->live_text_rows.size()) return;
+    std::swap(title->live_text_rows[row], title->live_text_rows[row + 1]);
+    move_live_row_marker(title->current_cue_row, row, row + 1);
+    move_live_row_marker(title->pending_cue_row, row, row + 1);
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    text_table_->selectRow(row + 1);
 }
 
 

@@ -48,6 +48,8 @@ private slots:
     void on_add_to_scene();
     void on_selection_changed();
     void on_add_live_text_row();
+    void on_move_live_text_row_up();
+    void on_move_live_text_row_down();
 
 private:
     void build_ui();
@@ -70,6 +72,8 @@ private:
     QLabel       *text_editor_lbl_ = nullptr;
     QTableWidget *text_table_ = nullptr;
     QPushButton  *btn_add_text_row_ = nullptr;
+    QPushButton  *btn_row_up_ = nullptr;
+    QPushButton  *btn_row_down_ = nullptr;
     bool          updating_exposed_text_ = false;
 
     TitleEditor  *editor_     = nullptr;

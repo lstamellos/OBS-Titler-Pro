@@ -69,6 +69,26 @@ struct TitleSourceData {
     uint64_t seen_store_revision = 0;
 };
 
+
+static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared_ptr<Title> &title)
+{
+    std::vector<std::shared_ptr<Layer>> exposed;
+    if (!title) return exposed;
+    for (const auto &layer : title->layers) {
+        if (layer->type == LayerType::Text && layer->expose_text)
+            exposed.push_back(layer);
+    }
+    return exposed;
+}
+
+static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
+{
+    if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
+    auto exposed = exposed_text_layers(title);
+    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col)
+        exposed[col]->text_content = title->live_text_rows[row][col];
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  Helper: ARGB uint32 → r,g,b,a doubles (0..1)
  * ══════════════════════════════════════════════════════════════════ */
@@ -416,13 +436,16 @@ static void source_video_tick(void *priv, float seconds)
 
     if (title->cue_revision != data->seen_cue_revision) {
         double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
-        data->playhead = data->seen_cue_revision == 0 ? 0.0 : loop_end;
+        bool has_pending = title->pending_cue_row >= 0 &&
+                           title->pending_cue_row < (int)title->live_text_rows.size();
+        if (has_pending) {
+            data->playhead = loop_end;
+            data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
+        } else {
+            data->playhead = 0.0;
+            data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+        }
         data->seen_cue_revision = title->cue_revision;
-        data->cue_phase = data->seen_cue_revision == 0
-            ? TitleSourceData::CuePhase::FreeRun
-            : (data->playhead > 0.0
-                ? TitleSourceData::CuePhase::OutroThenIntro
-                : TitleSourceData::CuePhase::IntroLoop);
         data->playing = true;
         data->dirty = true;
     }
@@ -438,6 +461,12 @@ static void source_video_tick(void *priv, float seconds)
                                                     std::max(0.001, loop_end - loop_start));
         } else if (data->cue_phase == TitleSourceData::CuePhase::OutroThenIntro &&
                    data->playhead >= title->duration) {
+            if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
+                apply_live_text_row(title, title->pending_cue_row);
+                title->current_cue_row = title->pending_cue_row;
+                title->pending_cue_row = -1;
+                TitleDataStore::instance().notify_change();
+            }
             data->playhead = 0.0;
             data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
         } else if (data->playhead >= title->duration) {
