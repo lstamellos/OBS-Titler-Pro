@@ -448,6 +448,9 @@ static json title_to_json(const Title &t)
     jt["duration"] = t.duration;
     jt["loop_start"] = t.loop_start;
     jt["loop_end"] = t.loop_end;
+    jt["playback_mode"] = t.playback_mode;
+    jt["loop_type"] = t.loop_type;
+    jt["pause_time"] = t.pause_time;
     jt["bg_color"] = t.bg_color;
     jt["width"]    = t.width;
     jt["height"]   = t.height;
@@ -470,6 +473,9 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->duration = jt.value("duration", 5.0);
     t->loop_start = std::clamp(jt.value("loop_start", std::min(1.0, t->duration)), 0.0, t->duration);
     t->loop_end = std::clamp(jt.value("loop_end", std::max(t->loop_start, t->duration - 1.0)), t->loop_start, t->duration);
+    t->playback_mode = std::clamp(jt.value("playback_mode", 0), 0, 2);
+    t->loop_type = std::clamp(jt.value("loop_type", 0), 0, 1);
+    t->pause_time = std::clamp(jt.value("pause_time", 0.0), 0.0, t->duration);
     t->bg_color = jt.value("bg_color", (uint32_t)0x00000000);
     t->width    = jt.value("width",    1920);
     t->height   = jt.value("height",   1080);

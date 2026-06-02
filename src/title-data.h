@@ -182,6 +182,9 @@ struct Title {
     double      duration    = 5.0;   /* total clip duration (seconds) */
     double      loop_start  = 1.0;   /* live-cue loop start (seconds) */
     double      loop_end    = 4.0;   /* live-cue loop end (seconds) */
+    int         playback_mode = 0;   /* 0=play once, 1=loop in/out, 2=pause at position */
+    int         loop_type     = 0;   /* 0=restart, 1=ping-pong */
+    double      pause_time    = 0.0; /* seconds from timeline start */
     uint32_t    bg_color    = 0x00000000;  /* transparent by default */
     int         width       = 1920;
     int         height      = 1080;

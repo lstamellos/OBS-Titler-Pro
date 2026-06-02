@@ -29,6 +29,7 @@
 #include <QScrollArea>
 #include <QSlider>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QGroupBox>
@@ -105,6 +106,7 @@ private:
     std::string            sel_layer_id_;
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
+    bool                   playback_reverse_ = false;
     QTimer                *play_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
 
@@ -277,7 +279,7 @@ private:
     bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
                         AnimatedProperty **prop, int *kf_idx, int *row_idx) const;
 
-    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut, Layer, LoopStart, LoopEnd };
+    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut, Layer, LoopStart, LoopEnd, PauseMarker };
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -311,6 +313,10 @@ private:
 
     std::shared_ptr<Title> title_;
     bool loading_values_ = false;
+    QComboBox      *cmb_playback_mode_ = nullptr;
+    QComboBox      *cmb_loop_type_ = nullptr;
+    QSpinBox       *spn_pause_frame_ = nullptr;
+    QDoubleSpinBox *spn_pause_time_ = nullptr;
     QDoubleSpinBox *spn_duration_ = nullptr;
     QDoubleSpinBox *spn_loop_start_ = nullptr;
     QDoubleSpinBox *spn_loop_end_ = nullptr;

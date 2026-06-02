@@ -990,6 +990,7 @@ void TitleEditor::open_title(const std::string &tid)
     act_play_->setText("▶");
     act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
     playhead_ = 0.0;
+    playback_reverse_ = false;
 
     title_ = TitleDataStore::instance().get_title(tid);
     if (!title_) return;
@@ -1046,6 +1047,9 @@ void TitleEditor::restore_undo_snapshot(int index)
     title_->duration = snapshot->duration;
     title_->loop_start = snapshot->loop_start;
     title_->loop_end = snapshot->loop_end;
+    title_->playback_mode = snapshot->playback_mode;
+    title_->loop_type = snapshot->loop_type;
+    title_->pause_time = snapshot->pause_time;
     title_->bg_color = snapshot->bg_color;
     title_->width = snapshot->width;
     title_->height = snapshot->height;
@@ -1097,6 +1101,10 @@ void TitleEditor::play_pause()
     if (!title_) return;
     playing_ = !playing_;
     if (playing_) {
+        if (title_->playback_mode != 2 && playhead_ >= title_->duration)
+            on_playhead_changed(0.0);
+        if (title_->playback_mode == 2 && playhead_ >= std::clamp(title_->pause_time, 0.0, title_->duration))
+            on_playhead_changed(0.0);
         act_play_->setText("⏸");
         act_play_->setIcon(obs_icon(this, {"media-playback-pause"}, QStyle::SP_MediaPause));
         playback_clock_.restart();
@@ -1110,6 +1118,7 @@ void TitleEditor::play_pause()
 
 void TitleEditor::rewind()
 {
+    playback_reverse_ = false;
     on_playhead_changed(0.0);
 }
 
@@ -1171,9 +1180,75 @@ void TitleEditor::tick()
     if (!title_ || !playing_) return;
     double dt = playback_clock_.isValid() ? playback_clock_.restart() / 1000.0 : 0.0;
     if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
-    double t = snap_to_obs_frame(playhead_ + dt);
-    if (t >= title_->duration) t = std::fmod(t, std::max(0.001, title_->duration));
-    on_playhead_changed(t);
+
+    double duration = std::max(0.001, title_->duration);
+    double t = playhead_;
+    switch (title_->playback_mode) {
+    case 1: /* Loop in/out */
+        if (title_->loop_type == 1) {
+            t += (playback_reverse_ ? -dt : dt);
+            if (t >= duration) {
+                t = duration - std::fmod(t - duration, duration);
+                playback_reverse_ = true;
+            } else if (t <= 0.0) {
+                t = std::fmod(-t, duration);
+                playback_reverse_ = false;
+            }
+        } else {
+            t = std::fmod(playhead_ + dt, duration);
+        }
+        break;
+    case 2: { /* Pause at timeline position */
+        double pause_time = std::clamp(title_->pause_time, 0.0, title_->duration);
+        t = playhead_ + dt;
+        if (t >= pause_time) {
+            t = pause_time;
+            playing_ = false;
+            play_timer_->stop();
+            act_play_->setText("▶");
+            act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
+        }
+        break;
+    }
+    default: /* Play once */
+        t = playhead_ + dt;
+        if (t >= title_->duration) {
+            t = title_->duration;
+            playing_ = false;
+            play_timer_->stop();
+            act_play_->setText("▶");
+            act_play_->setIcon(obs_icon(this, {"media-playback-start"}, QStyle::SP_MediaPlay));
+        }
+        break;
+    }
+    on_playhead_changed(snap_to_obs_frame(t));
+}
+
+void TitleEditor::keyPressEvent(QKeyEvent *ev)
+{
+    if (ev->matches(QKeySequence::Undo)) {
+        if (undo_index_ > 0) restore_undo_snapshot(undo_index_ - 1);
+        ev->accept();
+        return;
+    }
+    if (ev->matches(QKeySequence::Redo)) {
+        if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
+        ev->accept();
+        return;
+    }
+    if (ev->key() == Qt::Key_Space && !ev->isAutoRepeat()) {
+        QWidget *fw = focusWidget();
+        bool editing_text = qobject_cast<QLineEdit *>(fw) ||
+                            qobject_cast<QTextEdit *>(fw) ||
+                            qobject_cast<QAbstractSpinBox *>(fw) ||
+                            qobject_cast<QComboBox *>(fw);
+        if (!editing_text) {
+            play_pause();
+            ev->accept();
+            return;
+        }
+    }
+    QDialog::keyPressEvent(ev);
 }
 
 void TitleEditor::keyPressEvent(QKeyEvent *ev)
@@ -1236,6 +1311,7 @@ void TitleEditor::on_title_modified()
 {
     if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
     canvas_->refresh_preview();
+    if (title_props_) title_props_->set_title(title_);
     if (timeline_) timeline_->set_title(title_);
     push_undo_snapshot();
     TitleDataStore::instance().notify_change();
@@ -1266,6 +1342,185 @@ void CanvasPreview::set_playhead(double t)
 void CanvasPreview::set_selected_layer(const std::string &lid)
 {
     sel_layer_id_ = lid; update();
+}
+
+void CanvasPreview::set_safe_guides_visible(bool visible)
+{
+    safe_guides_visible_ = visible;
+    update();
+}
+
+void CanvasPreview::refresh_preview()
+{
+    dirty_ = true;
+    update();
+}
+
+std::shared_ptr<Layer> CanvasPreview::selected_layer() const
+{
+    return title_ ? title_->find_layer(sel_layer_id_) : nullptr;
+}
+
+QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
+{
+    double lt = playhead_ - layer.in_time;
+    double w = eval_box_width(layer, lt);
+    double h = eval_box_height(layer, lt);
+    double ox = eval_origin_x(layer, lt);
+    double oy = eval_origin_y(layer, lt);
+    return QRectF(-ox * w, -oy * h, w, h);
+}
+
+double CanvasPreview::view_scale() const
+{
+    if (!title_) return 1.0;
+    return std::min((double)width() / title_->width,
+                    (double)height() / title_->height) * zoom_;
+}
+
+QPointF CanvasPreview::view_origin() const
+{
+    if (!title_) return QPointF(0, 0);
+    double scale = view_scale();
+    return QPointF((width() - title_->width * scale) / 2.0,
+                   (height() - title_->height * scale) / 2.0);
+}
+
+QPointF CanvasPreview::view_to_canvas(const QPointF &view_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF((view_pt.x() - origin.x()) / scale,
+                   (view_pt.y() - origin.y()) / scale);
+}
+
+QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const
+{
+    double scale = view_scale();
+    QPointF origin = view_origin();
+    return QPointF(origin.x() + canvas_pt.x() * scale,
+                   origin.y() + canvas_pt.y() * scale);
+}
+
+QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = -layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double dx = canvas_pt.x() - px;
+    double dy = canvas_pt.y() - py;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    double sx = std::max(0.0001, layer.scale_x.evaluate(lt));
+    double sy = std::max(0.0001, layer.scale_y.evaluate(lt));
+    return QPointF((dx * c - dy * ss) / sx,
+                   (dx * ss + dy * c) / sy);
+}
+
+QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
+{
+    double lt = playhead_ - layer.in_time;
+    double px = layer.pos_x.evaluate(lt);
+    double py = layer.pos_y.evaluate(lt);
+    double rot = layer.rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+    double sx = layer.scale_x.evaluate(lt);
+    double sy = layer.scale_y.evaluate(lt);
+    double x = layer_pt.x() * sx;
+    double y = layer_pt.y() * sy;
+    double c = std::cos(rot);
+    double ss = std::sin(rot);
+    return QPointF(px + x * c - y * ss,
+                   py + x * ss + y * c);
+}
+
+CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt) const
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked) return DragMode::None;
+
+    double scale = view_scale();
+    double handle = 8.0 / std::max(0.1, scale);
+    QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    QRectF r = layer_local_rect(*layer);
+
+    auto near_pt = [&](const QPointF &p) {
+        return std::abs(local.x() - p.x()) <= handle &&
+               std::abs(local.y() - p.y()) <= handle;
+    };
+
+    if (near_pt(r.topLeft())) return DragMode::ResizeNW;
+    if (near_pt(r.topRight())) return DragMode::ResizeNE;
+    if (near_pt(r.bottomLeft())) return DragMode::ResizeSW;
+    if (near_pt(r.bottomRight())) return DragMode::ResizeSE;
+    if (std::hypot(local.x(), local.y()) <= handle * 1.25) return DragMode::Origin;
+    if (r.adjusted(-handle, -handle, handle, handle).contains(local)) return DragMode::Move;
+    return DragMode::None;
+}
+
+void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    auto layer = selected_layer();
+    if (!layer || drag_mode_ == DragMode::None) return;
+
+    QPointF canvas = view_to_canvas(view_pt);
+    QPointF delta = canvas - drag_start_canvas_;
+    double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                           std::max(0.0, layer->out_time - layer->in_time));
+
+    if (drag_mode_ == DragMode::Move) {
+        if (modifiers & Qt::ShiftModifier) {
+            if (std::abs(delta.x()) >= std::abs(delta.y()))
+                delta.setY(0.0);
+            else
+                delta.setX(0.0);
+        }
+        set_animated_value(layer->pos_x, lt, drag_start_x_ + delta.x());
+        set_animated_value(layer->pos_y, lt, drag_start_y_ + delta.y());
+    } else if (drag_mode_ == DragMode::Origin) {
+        double w = std::max(1.0f, drag_start_w_);
+        double h = std::max(1.0f, drag_start_h_);
+        layer->origin_x = (float)std::clamp(drag_start_origin_x_ + delta.x() / w, 0.0, 1.0);
+        layer->origin_y = (float)std::clamp(drag_start_origin_y_ + delta.y() / h, 0.0, 1.0);
+        set_animated_value(layer->origin_x_prop, lt, layer->origin_x);
+        set_animated_value(layer->origin_y_prop, lt, layer->origin_y);
+        set_animated_value(layer->pos_x, lt, drag_start_x_ + delta.x());
+        set_animated_value(layer->pos_y, lt, drag_start_y_ + delta.y());
+    } else {
+        QPointF local = canvas_to_layer(*layer, canvas);
+        double left = -drag_start_origin_x_ * drag_start_w_;
+        double right = (1.0 - drag_start_origin_x_) * drag_start_w_;
+        double top = -drag_start_origin_y_ * drag_start_h_;
+        double bottom = (1.0 - drag_start_origin_y_) * drag_start_h_;
+
+        if (drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeSW)
+            left = std::min(local.x(), right - 1.0);
+        else
+            right = std::max(local.x(), left + 1.0);
+
+        if (drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeNE)
+            top = std::min(local.y(), bottom - 1.0);
+        else
+            bottom = std::max(local.y(), top + 1.0);
+
+        double new_w = std::max(1.0, right - left);
+        double new_h = std::max(1.0, bottom - top);
+        if (layer->type == LayerType::Image && layer->lock_aspect_ratio && drag_start_h_ > 0.0f) {
+            double aspect = drag_start_w_ / drag_start_h_;
+            if (std::abs(new_w - drag_start_w_) > std::abs(new_h - drag_start_h_) * aspect)
+                new_h = new_w / aspect;
+            else
+                new_w = new_h * aspect;
+        }
+        layer->rect_width = (float)new_w;
+        layer->rect_height = (float)new_h;
+        set_animated_value(layer->box_width, lt, new_w);
+        set_animated_value(layer->box_height, lt, new_h);
+    }
+
+    dirty_ = true;
+    drag_changed_ = true;
+    update();
 }
 
 void CanvasPreview::set_safe_guides_visible(bool visible)
@@ -2148,6 +2403,18 @@ void TimelineWidget::paintEvent(QPaintEvent *)
             p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop in");
             p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop out");
         }
+        if (title_->playback_mode == 2) {
+            int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, dur));
+            p.setPen(QPen(QColor(0xff, 0xc8, 0x32), 2));
+            p.drawLine(pause_x, 12, pause_x, H);
+            p.setBrush(QColor(0xff, 0xc8, 0x32));
+            p.setPen(Qt::NoPen);
+            QPolygon marker;
+            marker << QPoint(pause_x - 6, 12) << QPoint(pause_x + 6, 12) << QPoint(pause_x, 22);
+            p.drawPolygon(marker);
+            p.setPen(QColor(0xff, 0xe0, 0x85));
+            p.drawText(pause_x + 4, 22, 100, 16, Qt::AlignVCenter, "Pause");
+        }
     }
 
     /* Layer/property rows.  This uses the same row model as LayerStack so
@@ -2357,6 +2624,15 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     drag_start_out_ = 0.0;
 
     if (ev->pos().y() < ruler_height()) {
+        if (title_->playback_mode == 2) {
+            int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, title_->duration));
+            if (std::abs(ev->pos().x() - pause_x) <= 8) {
+                drag_mode_ = DragMode::PauseMarker;
+                setCursor(Qt::SizeHorCursor);
+                ev->accept();
+                return;
+            }
+        }
         int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, title_->duration));
         int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, title_->duration));
         if (std::abs(ev->pos().x() - loop_x0) <= 8) {
@@ -2435,6 +2711,12 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if (drag_mode_ == DragMode::PauseMarker) {
+        title_->pause_time = t;
+        update();
+        return;
+    }
+
     if (drag_mode_ == DragMode::LoopStart) {
         title_->loop_start = std::clamp(t, 0.0, title_->loop_end);
         update();
@@ -2506,7 +2788,8 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
                    drag_mode_ == DragMode::TrimOut ||
                    drag_mode_ == DragMode::Layer ||
                    drag_mode_ == DragMode::LoopStart ||
-                   drag_mode_ == DragMode::LoopEnd;
+                   drag_mode_ == DragMode::LoopEnd ||
+                   drag_mode_ == DragMode::PauseMarker;
     if (drag_mode_ == DragMode::Keyframe && title_) {
         if (auto layer = title_->find_layer(drag_layer_id_)) {
             for (auto *prop : timeline_properties(*layer)) {
@@ -2539,12 +2822,36 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
         "QGroupBox{color:#aaa;background:#1a1a1a;border:1px solid #333;"
         "border-radius:3px;margin-top:6px;font-size:10px;padding-top:4px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:8px;}"
-        "QDoubleSpinBox{color:#ccc;background:#2a2a2a;border:none;"
+        "QDoubleSpinBox,QSpinBox,QComboBox{color:#ccc;background:#2a2a2a;border:none;"
         "border-radius:2px;padding:2px;}");
 
     auto *fl = new QFormLayout(this);
     fl->setContentsMargins(8, 10, 8, 6);
     fl->setSpacing(3);
+
+    cmb_playback_mode_ = new QComboBox(this);
+    cmb_playback_mode_->addItem("Play Once", 0);
+    cmb_playback_mode_->addItem("Loop In/Out", 1);
+    cmb_playback_mode_->addItem("Pause at Timeline Position", 2);
+    fl->addRow("Playback Mode:", cmb_playback_mode_);
+
+    cmb_loop_type_ = new QComboBox(this);
+    cmb_loop_type_->addItem("Restart Loop", 0);
+    cmb_loop_type_->addItem("Ping-Pong Loop", 1);
+    fl->addRow("Loop Type:", cmb_loop_type_);
+
+    spn_pause_frame_ = new QSpinBox(this);
+    spn_pause_frame_->setRange(0, 1000000);
+    spn_pause_frame_->setToolTip("Frame where Play Once pauses indefinitely.");
+    fl->addRow("Pause Frame:", spn_pause_frame_);
+
+    spn_pause_time_ = new QDoubleSpinBox(this);
+    spn_pause_time_->setRange(0.0, 3600.0);
+    spn_pause_time_->setSingleStep(obs_frame_duration());
+    spn_pause_time_->setDecimals(3);
+    spn_pause_time_->setSuffix(" s");
+    spn_pause_time_->setToolTip("Timeline timecode where playback pauses. Drag the yellow marker on the timeline to set this visually.");
+    fl->addRow("Pause Timecode:", spn_pause_time_);
 
     spn_duration_ = new QDoubleSpinBox(this);
     spn_duration_->setRange(0.1, 3600.0);
@@ -2569,6 +2876,39 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_loop_end_->setToolTip("Cue playback loops until this point; the next cue plays from here to the end.");
     fl->addRow("Loop end:", spn_loop_end_);
 
+    connect(cmb_playback_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!title_ || loading_values_) return;
+                title_->playback_mode = cmb_playback_mode_->currentData().toInt();
+                if (title_->playback_mode == 2 && title_->pause_time <= 0.0)
+                    title_->pause_time = title_->duration;
+                load_values();
+                emit title_changed();
+            });
+
+    connect(cmb_loop_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!title_ || loading_values_) return;
+                title_->loop_type = cmb_loop_type_->currentData().toInt();
+                emit title_changed();
+            });
+
+    connect(spn_pause_frame_, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, [this](int frame) {
+                if (!title_ || loading_values_) return;
+                title_->pause_time = std::clamp(frame * obs_frame_duration(), 0.0, title_->duration);
+                load_values();
+                emit title_changed();
+            });
+
+    connect(spn_pause_time_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                if (!title_ || loading_values_) return;
+                title_->pause_time = std::clamp(v, 0.0, title_->duration);
+                load_values();
+                emit title_changed();
+            });
+
     connect(spn_duration_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double v) {
                 if (!title_ || loading_values_) return;
@@ -2580,6 +2920,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                 }
                 title_->loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
                 title_->loop_end = std::clamp(title_->loop_end, title_->loop_start, title_->duration);
+                title_->pause_time = std::clamp(title_->pause_time, 0.0, title_->duration);
                 load_values();
                 emit title_changed();
             });
@@ -2614,11 +2955,32 @@ void TitlePropertiesPanel::load_values()
     double duration = title_ ? title_->duration : 5.0;
     double loop_start = title_ ? title_->loop_start : 1.0;
     double loop_end = title_ ? title_->loop_end : 4.0;
+    int playback_mode = title_ ? std::clamp(title_->playback_mode, 0, 2) : 0;
+    int loop_type = title_ ? std::clamp(title_->loop_type, 0, 1) : 0;
+    double pause_time = title_ ? std::clamp(title_->pause_time, 0.0, duration) : 0.0;
+
+    cmb_playback_mode_->setCurrentIndex(std::max(0, cmb_playback_mode_->findData(playback_mode)));
+    cmb_loop_type_->setCurrentIndex(std::max(0, cmb_loop_type_->findData(loop_type)));
     spn_duration_->setValue(duration);
     spn_loop_start_->setMaximum(duration);
     spn_loop_end_->setMaximum(duration);
     spn_loop_start_->setValue(std::clamp(loop_start, 0.0, duration));
     spn_loop_end_->setValue(std::clamp(loop_end, std::clamp(loop_start, 0.0, duration), duration));
+    spn_pause_time_->setMaximum(duration);
+    spn_pause_time_->setSingleStep(obs_frame_duration());
+    spn_pause_time_->setValue(pause_time);
+    spn_pause_frame_->setMaximum(std::max(0, (int)std::round(duration / obs_frame_duration())));
+    spn_pause_frame_->setValue((int)std::round(pause_time / obs_frame_duration()));
+
+    bool show_loop = playback_mode == 1;
+    bool show_pause = playback_mode == 2;
+    auto *form = qobject_cast<QFormLayout *>(layout());
+    cmb_loop_type_->setVisible(show_loop);
+    if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(cmb_loop_type_))) label->setVisible(show_loop);
+    spn_pause_frame_->setVisible(show_pause);
+    if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(spn_pause_frame_))) label->setVisible(show_pause);
+    spn_pause_time_->setVisible(show_pause);
+    if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(spn_pause_time_))) label->setVisible(show_pause);
     loading_values_ = false;
 }
 

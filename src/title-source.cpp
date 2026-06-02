@@ -55,6 +55,7 @@ struct TitleSourceData {
     /* Playback state */
     double      playhead     = 0.0;    /* seconds */
     bool        playing      = true;
+    bool        playback_reverse = false;
     uint64_t    seen_cue_revision = 0;
     CuePhase    cue_phase    = CuePhase::FreeRun;
     std::chrono::steady_clock::time_point last_tick;
@@ -512,6 +513,8 @@ static void source_update(void *priv, obs_data_t *settings)
     data->loop     = obs_data_get_bool(settings,   PROP_LOOP);
     data->speed    = (float)obs_data_get_double(settings, PROP_SPEED);
     data->playhead = 0.0;
+    data->playback_reverse = false;
+    data->playing = true;
     data->dirty    = true;
 }
 
@@ -549,14 +552,22 @@ static void source_video_tick(void *priv, float seconds)
             data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
         }
         data->seen_cue_revision = title->cue_revision;
+        data->playback_reverse = false;
         data->playing = true;
         data->dirty = true;
     }
 
     if (data->playing) {
-        data->playhead += (double)seconds * data->speed;
+        double dt = (double)seconds * data->speed;
+        double duration = std::max(0.001, title->duration);
         double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
         double loop_end = std::clamp(title->loop_end, loop_start, title->duration);
+
+        if (data->cue_phase == TitleSourceData::CuePhase::FreeRun && title->playback_mode == 1 && title->loop_type == 1) {
+            data->playhead += data->playback_reverse ? -dt : dt;
+        } else {
+            data->playhead += dt;
+        }
 
         if (data->cue_phase == TitleSourceData::CuePhase::IntroLoop && loop_end > loop_start &&
             data->playhead >= loop_end) {
@@ -577,10 +588,27 @@ static void source_video_tick(void *priv, float seconds)
             }
             data->playhead = std::clamp(next_intro_time, 0.0, title->duration);
             data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
-        } else if (data->playhead >= title->duration) {
-            if (data->loop) {
-                data->playhead = std::fmod(data->playhead, std::max(0.001, title->duration));
-            } else {
+            data->playback_reverse = false;
+        } else if (data->cue_phase == TitleSourceData::CuePhase::FreeRun) {
+            if (title->playback_mode == 1) {
+                if (title->loop_type == 1) {
+                    if (data->playhead >= title->duration) {
+                        data->playhead = title->duration - std::fmod(data->playhead - title->duration, duration);
+                        data->playback_reverse = true;
+                    } else if (data->playhead <= 0.0) {
+                        data->playhead = std::fmod(-data->playhead, duration);
+                        data->playback_reverse = false;
+                    }
+                } else if (data->playhead >= title->duration) {
+                    data->playhead = std::fmod(data->playhead, duration);
+                }
+            } else if (title->playback_mode == 2) {
+                double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
+                if (data->playhead >= pause_time) {
+                    data->playhead = pause_time;
+                    data->playing = false;
+                }
+            } else if (data->playhead >= title->duration) {
                 data->playhead = title->duration;
                 data->playing  = false;
             }
