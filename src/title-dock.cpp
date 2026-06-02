@@ -123,6 +123,7 @@ void TitleDock::build_ui()
     toolbar->setSpacing(2);
 
     btn_add_  = new QPushButton("+",        container_);
+    btn_tpl_  = new QPushButton("Templates", container_);
     btn_dup_  = new QPushButton("⧉",        container_);
     btn_rename_ = new QPushButton("Rename", container_);
     btn_del_  = new QPushButton("✕",        container_);
@@ -232,6 +233,12 @@ void TitleDock::build_ui()
     setWidget(container_);
 
     /* ── connections ── */
+    auto *template_menu = new QMenu(btn_tpl_);
+    template_menu->addAction("Lower Third", this, &TitleDock::on_add_template_lower_third);
+    template_menu->addAction("Centered Title", this, &TitleDock::on_add_template_center_title);
+    template_menu->addAction("Ticker / Strap", this, &TitleDock::on_add_template_ticker);
+    btn_tpl_->setMenu(template_menu);
+
     connect(btn_add_,   &QPushButton::clicked, this, &TitleDock::on_add);
     connect(btn_dup_,   &QPushButton::clicked, this, &TitleDock::on_duplicate);
     connect(btn_rename_, &QPushButton::clicked, this, &TitleDock::on_rename);
