@@ -34,6 +34,11 @@
 #include <chrono>
 #include <algorithm>
 #include <cctype>
+#include <vector>
+
+namespace {
+constexpr double kPi = 3.141592653589793238462643383279502884;
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
@@ -335,8 +340,6 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    cairo_set_global_alpha(cr, alpha);  /* not a real Cairo API – handled below */
-
     /* Build Pango layout */
     PangoLayout *layout = pango_cairo_create_layout(cr);
 

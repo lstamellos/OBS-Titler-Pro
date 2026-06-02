@@ -369,6 +369,49 @@ void TitleEditor::build_ui()
                 TitleDataStore::instance().notify_change();
             });
 
+    auto duplicate_layer = [this](const Layer &source) {
+        auto copy = std::make_shared<Layer>(source);
+        copy->id = TitleDataStore::make_uuid();
+        copy->name = source.name.empty() ? "Layer copy" : source.name + " copy";
+        copy->pos_x.static_value += 20.0;
+        copy->pos_y.static_value += 20.0;
+        for (auto &kf : copy->pos_x.keyframes) kf.value += 20.0;
+        for (auto &kf : copy->pos_y.keyframes) kf.value += 20.0;
+        return copy;
+    };
+
+    connect(layers_, &LayerStack::clone_layer_requested,
+            this, [this, duplicate_layer](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                auto clone = duplicate_layer(*source);
+                title_->add_layer(clone);
+                layers_->refresh();
+                on_layer_selected(clone->id);
+                TitleDataStore::instance().notify_change();
+            });
+
+    connect(layers_, &LayerStack::copy_layer_requested,
+            this, [this](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                copied_layer_ = std::make_shared<Layer>(*source);
+                layers_->set_layer_clipboard_available(true);
+            });
+
+    connect(layers_, &LayerStack::paste_layer_requested,
+            this, [this, duplicate_layer]() {
+                if (!title_ || !copied_layer_) return;
+                auto pasted = duplicate_layer(*copied_layer_);
+                title_->add_layer(pasted);
+                layers_->refresh();
+                layers_->set_layer_clipboard_available(true);
+                on_layer_selected(pasted->id);
+                TitleDataStore::instance().notify_change();
+            });
+
     connect(layers_, &LayerStack::delete_layer_requested,
             this, [this](const std::string &lid) {
                 if (!title_) return;
@@ -2022,6 +2065,41 @@ void LayerStack::show_context_menu(const QPoint &pos)
     else if (chosen == delete_action) emit delete_layer_requested(id);
 }
 
+void LayerStack::set_layer_clipboard_available(bool available)
+{
+    can_paste_layer_ = available;
+}
+
+void LayerStack::show_context_menu(const QPoint &pos)
+{
+    if (!list_) return;
+    QListWidgetItem *item = list_->itemAt(pos);
+    if (item) list_->setCurrentItem(item);
+
+    std::string id = selected_id();
+    bool has_layer = !id.empty() && title_ && title_->find_layer(id) != nullptr;
+
+    QMenu menu(this);
+    QMenu *layer_menu = menu.addMenu("Layer");
+    QAction *clone_action = layer_menu->addAction("Clone");
+    QAction *copy_action = layer_menu->addAction("Copy");
+    QAction *paste_action = layer_menu->addAction("Paste");
+    layer_menu->addSeparator();
+    QAction *delete_action = layer_menu->addAction("Delete");
+
+    clone_action->setEnabled(has_layer);
+    copy_action->setEnabled(has_layer);
+    paste_action->setEnabled(can_paste_layer_);
+    delete_action->setEnabled(has_layer);
+
+    QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == clone_action) emit clone_layer_requested(id);
+    else if (chosen == copy_action) emit copy_layer_requested(id);
+    else if (chosen == paste_action) emit paste_layer_requested();
+    else if (chosen == delete_action) emit delete_layer_requested(id);
+}
+
 std::string LayerStack::selected_id() const
 {
     auto *item = list_->currentItem();
@@ -2902,6 +2980,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_outline_width_ = mk_dspin(0.0, 100.0, 0.5);
     spn_outline_width_->setToolTip("Outline thickness in pixels; set to 0 to disable.");
 
+    cmb_text_style_ = new QComboBox(inner);
+    cmb_text_style_->addItem("Normal", 0);
+    cmb_text_style_->addItem("All caps", 1);
+    cmb_text_style_->addItem("Small caps", 2);
+    cmb_text_style_->addItem("Superscript", 3);
+    cmb_text_style_->addItem("Subscript", 4);
+    cmb_text_style_->setStyleSheet(cmb_font_->styleSheet());
+
+    btn_text_color_ = new QPushButton(inner);
+    btn_outline_color_ = new QPushButton(inner);
+    spn_outline_width_ = mk_dspin(0.0, 100.0, 0.5);
+    spn_outline_width_->setToolTip("Outline thickness in pixels; set to 0 to disable.");
+
     txfl->addRow("Text:",   txt_content_);
     txfl->addRow("Font:",   cmb_font_);
     txfl->addRow("Size:",   spn_size_);
@@ -3009,6 +3100,40 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 chk_superscript_->setChecked(layer_->text_superscript);
                 chk_subscript_->setChecked(layer_->text_subscript);
                 emit_change();
+            });
+    connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, emit_change](int idx){
+                if (!layer_) return;
+                int style = cmb_text_style_->itemData(idx).toInt();
+                layer_->text_all_caps = style == 1;
+                layer_->text_small_caps = style == 2;
+                layer_->text_superscript = style == 3;
+                layer_->text_subscript = style == 4;
+                emit_change();
+            });
+    connect(btn_text_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor picked = QColorDialog::getColor(color_from_argb(layer_->text_color), this,
+                                                        "Text Color", QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->text_color = argb_from_color(picked);
+                emit_change();
+                load_values();
+            });
+    connect(btn_outline_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor picked = QColorDialog::getColor(color_from_argb(layer_->stroke_color), this,
+                                                        "Outline Color", QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->stroke_color = argb_from_color(picked);
+                emit_change();
+                load_values();
+            });
+    connect(spn_outline_width_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->stroke_width = (float)v; emit_change(); }
             });
     connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, emit_change](int idx){
