@@ -34,6 +34,13 @@
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QPushButton>
+#include <QLineEdit>
+#include <QSpinBox>
+#include <QPointF>
+#include <QPoint>
+#include <QRectF>
 #include <memory>
 
 /* Forward declarations for sub-widgets */
@@ -41,6 +48,9 @@ class CanvasPreview;
 class LayerStack;
 class TimelineWidget;
 class PropertiesPanel;
+class TitlePropertiesPanel;
+class QKeyEvent;
+class QContextMenuEvent;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -62,11 +72,16 @@ public slots:
     void play_pause();
     void rewind();
     void step_forward();
+    void previous_keyframe();
+    void next_keyframe();
 
     /* Called by sub-widgets */
     void on_layer_selected(const std::string &layer_id);
     void on_playhead_changed(double t);
     void on_title_modified();
+
+protected:
+    void keyPressEvent(QKeyEvent *ev) override;
 
 private slots:
     void tick();
@@ -82,18 +97,22 @@ private:
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
     QTimer                *play_timer_ = nullptr;
+    QElapsedTimer          playback_clock_;
 
     /* Sub-widgets */
     CanvasPreview   *canvas_    = nullptr;
     LayerStack      *layers_    = nullptr;
     TimelineWidget  *timeline_  = nullptr;
     PropertiesPanel *props_     = nullptr;
+    TitlePropertiesPanel *title_props_ = nullptr;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
 
     QToolBar        *toolbar_   = nullptr;
     QAction         *act_play_  = nullptr;
     QAction         *act_rew_   = nullptr;
+    QAction         *act_prev_kf_ = nullptr;
+    QAction         *act_next_kf_ = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -108,18 +127,34 @@ public:
     void set_title(std::shared_ptr<Title> t);
     void set_playhead(double t);
     void set_selected_layer(const std::string &lid);
+    void refresh_preview();
 
 signals:
     void layer_clicked(const std::string &layer_id);
+    void layer_geometry_changed();
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
+    void mouseMoveEvent(QMouseEvent *ev) override;
+    void mouseReleaseEvent(QMouseEvent *ev) override;
     void wheelEvent(QWheelEvent *ev) override;
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
+    enum class DragMode { None, Move, ResizeNW, ResizeNE, ResizeSW, ResizeSE, Origin };
+
     void render_to_pixmap();
+    std::shared_ptr<Layer> selected_layer() const;
+    QRectF layer_local_rect(const Layer &layer) const;
+    double view_scale() const;
+    QPointF view_origin() const;
+    QPointF view_to_canvas(const QPointF &view_pt) const;
+    QPointF canvas_to_view(const QPointF &canvas_pt) const;
+    QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
+    QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
+    DragMode hit_test_selected(const QPointF &view_pt) const;
+    void apply_drag(const QPointF &view_pt);
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -127,6 +162,15 @@ private:
     float  zoom_     = 1.0f;
     QPixmap frame_pixmap_;
     bool dirty_ = true;
+
+    DragMode drag_mode_ = DragMode::None;
+    QPointF drag_start_canvas_;
+    double drag_start_x_ = 0.0;
+    double drag_start_y_ = 0.0;
+    float drag_start_w_ = 1.0f;
+    float drag_start_h_ = 1.0f;
+    float drag_start_origin_x_ = 0.5f;
+    float drag_start_origin_y_ = 0.5f;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -140,10 +184,14 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void refresh();
+    void set_selected_layer(const std::string &layer_id);
 
 signals:
     void layer_selected(const std::string &layer_id);
     void layer_visibility_changed(const std::string &layer_id, bool v);
+    void layer_lock_changed(const std::string &layer_id, bool locked);
+    void layer_expand_changed(const std::string &layer_id, bool expanded);
+    void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
     void delete_layer_requested(const std::string &layer_id);
@@ -151,19 +199,22 @@ signals:
 private slots:
     void on_add_text();
     void on_add_rect();
+    void on_add_image();
     void on_delete();
     void on_item_changed(QListWidgetItem *item);
     void on_selection_changed();
 
 private:
     void populate();
+    void sync_order_from_list();
     std::string selected_id() const;
 
     std::shared_ptr<Title> title_;
     QListWidget  *list_     = nullptr;
-    QPushButton  *btn_add_text_ = nullptr;
-    QPushButton  *btn_add_rect_ = nullptr;
-    QPushButton  *btn_del_      = nullptr;
+    QPushButton  *btn_add_text_  = nullptr;
+    QPushButton  *btn_add_rect_  = nullptr;
+    QPushButton  *btn_add_image_ = nullptr;
+    QPushButton  *btn_del_       = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -185,25 +236,63 @@ signals:
                         const std::string &prop_name, double t);
     void keyframe_moved(const std::string &layer_id,
                         const std::string &prop_name, int kf_idx, double new_t);
+    void keyframe_easing_changed();
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void contextMenuEvent(QContextMenuEvent *ev) override;
+    void wheelEvent(QWheelEvent *ev) override;
 
 private:
     double x_to_time(int x) const;
     int    time_to_x(double t) const;
-    int    ruler_height() const { return 24; }
-    int    row_height()   const { return 22; }
+    int    ruler_height() const { return 72; }
+    int    row_height()   const { return 24; }
+    double snap_time(double t) const;
+    void   clamp_scroll();
+    bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
+                        AnimatedProperty **prop, int *kf_idx, int *row_idx) const;
+
+    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut, Layer, LoopStart, LoopEnd };
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
     double playhead_  = 0.0;
-    bool   dragging_  = false;
+    DragMode drag_mode_ = DragMode::None;
+    std::string drag_layer_id_;
+    std::string drag_prop_name_;
+    int drag_keyframe_index_ = -1;
+    double drag_start_time_ = 0.0;
+    double drag_start_in_ = 0.0;
+    double drag_start_out_ = 0.0;
     double pixels_per_sec_ = 80.0;
     int    scroll_x_       = 0;
+};
+
+/* ══════════════════════════════════════════════════════════════════
+ *  TitlePropertiesPanel – global title inspector
+ * ══════════════════════════════════════════════════════════════════ */
+class TitlePropertiesPanel : public QGroupBox {
+    Q_OBJECT
+
+public:
+    explicit TitlePropertiesPanel(QWidget *parent = nullptr);
+    void set_title(std::shared_ptr<Title> t);
+
+signals:
+    void title_changed();
+
+private:
+    void load_values();
+
+    std::shared_ptr<Title> title_;
+    bool loading_values_ = false;
+    QDoubleSpinBox *spn_duration_ = nullptr;
+    QDoubleSpinBox *spn_loop_start_ = nullptr;
+    QDoubleSpinBox *spn_loop_end_ = nullptr;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -231,6 +320,11 @@ private:
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
     double playhead_ = 0.0;
+    bool loading_values_ = false;
+
+    QGroupBox       *text_box_     = nullptr;
+    QGroupBox       *rect_box_     = nullptr;
+    QGroupBox       *image_box_    = nullptr;
 
     /* Text controls */
     QLineEdit       *txt_content_  = nullptr;
@@ -238,10 +332,36 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+    QCheckBox       *chk_expose_text_ = nullptr;
+    QPushButton     *btn_text_color_ = nullptr;
+
+    /* Rectangle/Image geometry controls */
+    QDoubleSpinBox  *spn_layer_w_   = nullptr;
+    QDoubleSpinBox  *spn_layer_h_   = nullptr;
+    QDoubleSpinBox  *spn_rect_corner_   = nullptr;
+    QPushButton     *btn_fill_color_ = nullptr;
+    QWidget         *row_fill_color_ = nullptr;
+
+    /* Image controls */
+    QLineEdit       *edit_image_path_ = nullptr;
+    QPushButton     *btn_pick_image_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;
     QDoubleSpinBox  *spn_py_       = nullptr;
     QDoubleSpinBox  *spn_rot_      = nullptr;
     QDoubleSpinBox  *spn_opacity_  = nullptr;
+    QDoubleSpinBox  *spn_origin_x_ = nullptr;
+    QDoubleSpinBox  *spn_origin_y_ = nullptr;
+    QCheckBox       *chk_lock_aspect_ = nullptr;
+    QPushButton     *btn_kf_pos_x_ = nullptr;
+    QPushButton     *btn_kf_pos_y_ = nullptr;
+    QPushButton     *btn_kf_rotation_ = nullptr;
+    QPushButton     *btn_kf_opacity_ = nullptr;
+    QPushButton     *btn_kf_origin_x_ = nullptr;
+    QPushButton     *btn_kf_origin_y_ = nullptr;
+    QPushButton     *btn_kf_width_ = nullptr;
+    QPushButton     *btn_kf_height_ = nullptr;
+    QPushButton     *btn_kf_text_color_ = nullptr;
+    QPushButton     *btn_kf_fill_color_ = nullptr;
 };
