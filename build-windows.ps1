@@ -39,45 +39,13 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
 
 $PluginName = "obs-titler-pro"
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
+$ObsArchDir = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "32bit" } else { "64bit" }
+$PluginDllName = "$PluginName.dll"
 $ObsPluginRoot = Join-Path $InstallRoot $PluginName
-$ObsPluginBin = Join-Path $ObsPluginRoot "bin\64bit"
+$ObsPluginBin = Join-Path $ObsPluginRoot "bin\$ObsArchDir"
 $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
 Write-Host "=== Starting OBS Titler Pro build process ==="
-
-
-# Guard against accidental duplicate out-of-class bodies in the large editor
-# translation unit. MSVC reports these late during compilation, so fail early
-# with the exact repeated definitions that have previously broken Windows builds.
-function Assert-UniqueSourceDefinition {
-    param(
-        [string]$File,
-        [string[]]$Definitions
-    )
-
-    if (-not (Test-Path $File)) {
-        Write-Error "Source file not found: $File"
-        exit 1
-    }
-
-    $Text = Get-Content -Raw -Path $File
-    foreach ($Definition in $Definitions) {
-        $Count = ([regex]::Matches($Text, [regex]::Escape($Definition))).Count
-        if ($Count -gt 1) {
-            Write-Error "Duplicate definition detected in ${File}: '$Definition' appears $Count times. Remove the duplicate body before building."
-            exit 1
-        }
-    }
-}
-
-$TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
-Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
-    "void TimelineWidget::contextMenuEvent(",
-    "void TimelineWidget::wheelEvent(",
-    "TitlePropertiesPanel::TitlePropertiesPanel(",
-    "void TitlePropertiesPanel::set_title(",
-    "void TitlePropertiesPanel::load_values("
-)
 
 
 # Guard against accidental duplicate out-of-class bodies in the large editor
@@ -218,20 +186,35 @@ New-Item -ItemType Directory -Force -Path $ObsPluginData | Out-Null
 
 $StagedPluginRoot = Join-Path $BuildDir $PluginName
 $BuiltDllCandidates = @(
-    (Join-Path $StagedPluginRoot "bin\64bit\obs-titler-pro.dll"),
-    (Join-Path $BuildDir "obs-plugins\Release\obs-titler-pro.dll"),
-    (Join-Path $BuildDir "obs-plugins\obs-titler-pro.dll"),
-    (Join-Path $BuildDir "obs-plugins\64bit\obs-titler-pro.dll"),
-    (Join-Path $BuildDir "Release\obs-titler-pro.dll")
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Release\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\RelWithDebInfo\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Debug\$PluginDllName"),
+    (Join-Path $BuildDir "obs-plugins\Release\$PluginDllName"),
+    (Join-Path $BuildDir "obs-plugins\$PluginDllName"),
+    (Join-Path $BuildDir "obs-plugins\$ObsArchDir\$PluginDllName"),
+    (Join-Path $BuildDir "Release\$PluginDllName"),
+    (Join-Path $BuildDir "RelWithDebInfo\$PluginDllName"),
+    (Join-Path $BuildDir "Debug\$PluginDllName")
 )
 $BuiltDll = $BuiltDllCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $BuiltDll) {
-    Write-Error "Could not find built obs-titler-pro.dll. Checked: $($BuiltDllCandidates -join ', ')"
+    $RecursiveMatch = Get-ChildItem -Path $BuildDir -Filter $PluginDllName -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object @{ Expression = { if ($_.FullName -like "*\$PluginName\bin\$ObsArchDir*") { 0 } else { 1 } } }, FullName |
+        Select-Object -First 1
+    if ($RecursiveMatch) {
+        $BuiltDll = $RecursiveMatch.FullName
+    }
+}
+
+if (-not $BuiltDll) {
+    Write-Error "Could not find built $PluginDllName. Checked known locations: $($BuiltDllCandidates -join ', '). Also searched recursively under $BuildDir."
     exit 1
 }
 
 Copy-Item -Force $BuiltDll $ObsPluginBin
+Write-Host "Copied plugin DLL from: $BuiltDll"
 Write-Host "Copied plugin DLL to: $ObsPluginBin"
 
 $StagedData = Join-Path $StagedPluginRoot "data"
@@ -283,7 +266,7 @@ if ($CopiedCount -eq 0) {
 }
 
 $ExpectedDlls = @(
-    "obs-titler-pro.dll",
+    $PluginDllName,
     "cairo.dll",
     "pango-1.0.dll",
     "pangocairo-1.0.dll"
@@ -300,6 +283,6 @@ if ($MissingExpectedDlls.Count -gt 0) {
 
 Write-Host "`nInstalled OBS plugin layout:"
 Write-Host "  $ObsPluginRoot"
-Write-Host "  $ObsPluginBin\obs-titler-pro.dll"
+Write-Host "  $ObsPluginBin\$PluginDllName"
 Write-Host "  $ObsPluginData\en-US.ini"
 Write-Host "`n=== OBS Titler Pro built and installed successfully! ==="
