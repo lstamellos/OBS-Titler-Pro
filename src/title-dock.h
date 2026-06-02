@@ -1,7 +1,7 @@
 /*
  * title-dock.h
  *
- * Part 2: OBS Dock – "Titles" panel.
+ * Part 2: OBS Dock – "OBS Titler Pro" panel.
  *
  * Shows a list of all saved titles with:
  *   • Live thumbnail preview

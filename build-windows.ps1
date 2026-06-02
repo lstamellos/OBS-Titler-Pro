@@ -1,4 +1,4 @@
-# build-windows.ps1 - Windows build helper for obs-titles.
+# build-windows.ps1 - Windows build helper for obs-titler-pro.
 # Validates prerequisites, configures CMake, builds, and installs the plugin.
 
 param(
@@ -37,13 +37,47 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
     }
 }
 
-$PluginName = "obs-titles"
+$PluginName = "obs-titler-pro"
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
 $ObsPluginRoot = Join-Path $InstallRoot $PluginName
 $ObsPluginBin = Join-Path $ObsPluginRoot "bin\64bit"
 $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
-Write-Host "=== Starting obs-titles build process ==="
+Write-Host "=== Starting OBS Titler Pro build process ==="
+
+
+# Guard against accidental duplicate out-of-class bodies in the large editor
+# translation unit. MSVC reports these late during compilation, so fail early
+# with the exact repeated definitions that have previously broken Windows builds.
+function Assert-UniqueSourceDefinition {
+    param(
+        [string]$File,
+        [string[]]$Definitions
+    )
+
+    if (-not (Test-Path $File)) {
+        Write-Error "Source file not found: $File"
+        exit 1
+    }
+
+    $Text = Get-Content -Raw -Path $File
+    foreach ($Definition in $Definitions) {
+        $Count = ([regex]::Matches($Text, [regex]::Escape($Definition))).Count
+        if ($Count -gt 1) {
+            Write-Error "Duplicate definition detected in ${File}: '$Definition' appears $Count times. Remove the duplicate body before building."
+            exit 1
+        }
+    }
+}
+
+$TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
+Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
+    "void TimelineWidget::contextMenuEvent(",
+    "void TimelineWidget::wheelEvent(",
+    "TitlePropertiesPanel::TitlePropertiesPanel(",
+    "void TitlePropertiesPanel::set_title(",
+    "void TitlePropertiesPanel::load_values("
+)
 
 
 # Guard against accidental duplicate out-of-class bodies in the large editor
@@ -164,7 +198,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 5. Build the Plugin
-Write-Host "`n=== Building obs-titles ==="
+Write-Host "`n=== Building OBS Titler Pro ==="
 & cmake --build $BuildDir --config Release
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed."
@@ -184,16 +218,16 @@ New-Item -ItemType Directory -Force -Path $ObsPluginData | Out-Null
 
 $StagedPluginRoot = Join-Path $BuildDir $PluginName
 $BuiltDllCandidates = @(
-    (Join-Path $StagedPluginRoot "bin\64bit\obs-titles.dll"),
-    (Join-Path $BuildDir "obs-plugins\Release\obs-titles.dll"),
-    (Join-Path $BuildDir "obs-plugins\obs-titles.dll"),
-    (Join-Path $BuildDir "obs-plugins\64bit\obs-titles.dll"),
-    (Join-Path $BuildDir "Release\obs-titles.dll")
+    (Join-Path $StagedPluginRoot "bin\64bit\obs-titler-pro.dll"),
+    (Join-Path $BuildDir "obs-plugins\Release\obs-titler-pro.dll"),
+    (Join-Path $BuildDir "obs-plugins\obs-titler-pro.dll"),
+    (Join-Path $BuildDir "obs-plugins\64bit\obs-titler-pro.dll"),
+    (Join-Path $BuildDir "Release\obs-titler-pro.dll")
 )
 $BuiltDll = $BuiltDllCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $BuiltDll) {
-    Write-Error "Could not find built obs-titles.dll. Checked: $($BuiltDllCandidates -join ', ')"
+    Write-Error "Could not find built obs-titler-pro.dll. Checked: $($BuiltDllCandidates -join ', ')"
     exit 1
 }
 
@@ -214,7 +248,7 @@ if (Test-Path $StagedData) {
 
 # 7. Copy runtime DLL dependencies next to the plugin binary.
 # A plugin can compile and still fail to load in OBS if Qt/Cairo/Pango DLLs are
-# not beside obs-titles.dll, so copy every vcpkg runtime DLL rather than trying
+# not beside obs-titler-pro.dll, so copy every vcpkg runtime DLL rather than trying
 # to maintain a fragile hand-written dependency list.
 Write-Host "`n=== Copying runtime DLL dependencies ==="
 $RuntimeDllDirs = @()
@@ -243,13 +277,13 @@ foreach ($RuntimeDllDir in ($RuntimeDllDirs | Select-Object -Unique)) {
 }
 
 if ($CopiedCount -eq 0) {
-    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says obs-titles failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
+    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says obs-titler-pro failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
 } else {
     Write-Host "Copied $CopiedCount runtime DLL dependencies."
 }
 
 $ExpectedDlls = @(
-    "obs-titles.dll",
+    "obs-titler-pro.dll",
     "cairo.dll",
     "pango-1.0.dll",
     "pangocairo-1.0.dll"
@@ -261,11 +295,11 @@ foreach ($Dll in $ExpectedDlls) {
     }
 }
 if ($MissingExpectedDlls.Count -gt 0) {
-    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that obs-titles failed to load."
+    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that obs-titler-pro failed to load."
 }
 
 Write-Host "`nInstalled OBS plugin layout:"
 Write-Host "  $ObsPluginRoot"
-Write-Host "  $ObsPluginBin\obs-titles.dll"
+Write-Host "  $ObsPluginBin\obs-titler-pro.dll"
 Write-Host "  $ObsPluginData\en-US.ini"
-Write-Host "`n=== obs-titles built and installed successfully! ==="
+Write-Host "`n=== OBS Titler Pro built and installed successfully! ==="

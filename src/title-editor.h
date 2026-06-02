@@ -256,7 +256,7 @@ private:
     bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
                         AnimatedProperty **prop, int *kf_idx, int *row_idx) const;
 
-    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut };
+    enum class DragMode { None, Playhead, Keyframe, TrimIn, TrimOut, Layer };
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -265,6 +265,9 @@ private:
     std::string drag_layer_id_;
     std::string drag_prop_name_;
     int drag_keyframe_index_ = -1;
+    double drag_start_time_ = 0.0;
+    double drag_start_in_ = 0.0;
+    double drag_start_out_ = 0.0;
     double pixels_per_sec_ = 80.0;
     int    scroll_x_       = 0;
 };

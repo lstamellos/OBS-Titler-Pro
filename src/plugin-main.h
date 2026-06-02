@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef PLUGIN_NAME
-#define PLUGIN_NAME "obs-titles"
+#define PLUGIN_NAME "obs-titler-pro"
 #endif
 
 #ifndef PLUGIN_VERSION

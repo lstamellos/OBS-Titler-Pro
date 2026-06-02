@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-titles VERSION 1.0.0)
+project(obs-titler-pro VERSION 1.0.0)
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #   <plugins-root>/<plugin-name>/data/locale/*.ini
 # Keeping build artifacts in this shape makes the build tree directly copyable
 # into the OBS plugins directory and matches the Windows ProgramData layout.
-set(OBS_TITLES_PLUGIN_NAME "obs-titles")
+set(OBS_TITLES_PLUGIN_NAME "obs-titler-pro")
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(OBS_TITLES_ARCH_DIR "64bit")
   set(OBS_TITLES_VCPKG_DEFAULT_TRIPLET "x64-windows")
@@ -268,19 +268,19 @@ set(PLUGIN_HEADERS
 )
 
 # ── Target ──────────────────────────────────────────────────────────
-add_library(obs-titles MODULE
+add_library(obs-titler-pro MODULE
     ${PLUGIN_SOURCES}
     ${PLUGIN_HEADERS}
 )
 
-target_include_directories(obs-titles PRIVATE
+target_include_directories(obs-titler-pro PRIVATE
     src
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${PANGOCAIRO_INCLUDE_DIRS}
 )
 
-target_link_libraries(obs-titles PRIVATE
+target_link_libraries(obs-titler-pro PRIVATE
     OBS::libobs
     OBS::obs-frontend-api
     ${QT_LIBS}
@@ -291,26 +291,26 @@ target_link_libraries(obs-titles PRIVATE
 )
 
 if(CAIRO_CFLAGS_OTHER)
-  target_compile_options(obs-titles PRIVATE ${CAIRO_CFLAGS_OTHER})
+  target_compile_options(obs-titler-pro PRIVATE ${CAIRO_CFLAGS_OTHER})
 endif()
 if(PANGO_CFLAGS_OTHER)
-  target_compile_options(obs-titles PRIVATE ${PANGO_CFLAGS_OTHER})
+  target_compile_options(obs-titler-pro PRIVATE ${PANGO_CFLAGS_OTHER})
 endif()
 if(PANGOCAIRO_CFLAGS_OTHER)
-  target_compile_options(obs-titles PRIVATE ${PANGOCAIRO_CFLAGS_OTHER})
+  target_compile_options(obs-titler-pro PRIVATE ${PANGOCAIRO_CFLAGS_OTHER})
 endif()
 
 # ── Locale / data files ──────────────────────────────────────────────
-target_compile_definitions(obs-titles PRIVATE
+target_compile_definitions(obs-titler-pro PRIVATE
     PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
     PLUGIN_VERSION="${PROJECT_VERSION}"
 )
 
 # ── OBS module helper (sets correct output name & install path) ──────
 # This macro is provided by the OBS cmake helpers:
-#   set_target_obs_bundle(obs-titles)
+#   set_target_obs_bundle(obs-titler-pro)
 # If building standalone, stage artifacts in OBS' user-plugin folder layout.
-set_target_properties(obs-titles PROPERTIES
+set_target_properties(obs-titler-pro PROPERTIES
     PREFIX ""
     LIBRARY_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
     RUNTIME_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
@@ -318,13 +318,13 @@ set_target_properties(obs-titles PROPERTIES
 )
 foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
   string(TOUPPER "${config}" config_upper)
-  set_target_properties(obs-titles PROPERTIES
+  set_target_properties(obs-titler-pro PROPERTIES
       LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
       RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
       ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/lib/${config}")
 endforeach()
 
-add_custom_command(TARGET obs-titles POST_BUILD
+add_custom_command(TARGET obs-titler-pro POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${OBS_TITLES_PACKAGE_DIR}/data"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -365,18 +365,18 @@ if(WIN32)
 
   if(OBS_TITLES_RUNTIME_DLLS)
     list(REMOVE_DUPLICATES OBS_TITLES_RUNTIME_DLLS)
-    add_custom_command(TARGET obs-titles POST_BUILD
+    add_custom_command(TARGET obs-titler-pro POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 ${OBS_TITLES_RUNTIME_DLLS}
-                "$<TARGET_FILE_DIR:obs-titles>"
+                "$<TARGET_FILE_DIR:obs-titler-pro>"
         COMMAND_EXPAND_LISTS
         COMMENT "Copying Windows runtime DLL dependencies")
     install(FILES ${OBS_TITLES_RUNTIME_DLLS}
             DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
   else()
     message(WARNING
-      "No vcpkg runtime DLLs were found to bundle with obs-titles. "
-      "If OBS reports that obs-titles failed to load, ensure Qt/Cairo/Pango "
+      "No vcpkg runtime DLLs were found to bundle with obs-titler-pro. "
+      "If OBS reports that obs-titler-pro failed to load, ensure Qt/Cairo/Pango "
       "runtime DLLs are next to the plugin binary or use build-windows.ps1.")
   endif()
 endif()
@@ -385,7 +385,7 @@ endif()
 # Install into the same user-plugin layout expected below the chosen prefix.
 # Example Windows prefix: C:/ProgramData/obs-studio/plugins
 # Example Linux prefix:   ~/.config/obs-studio/plugins
-install(TARGETS obs-titles
+install(TARGETS obs-titler-pro
         RUNTIME DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR}
         LIBRARY DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
 
@@ -394,4 +394,4 @@ install(DIRECTORY data/locale
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────
-message(STATUS "obs-titles: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
+message(STATUS "OBS Titler Pro: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")

@@ -407,14 +407,14 @@ void TitleDataStore::save() const
     if (f.is_open())
         f << root.dump(2);
     else
-        blog(LOG_WARNING, "[obs-titles] Failed to save titles.json");
+        blog(LOG_WARNING, "[OBS Titler Pro] Failed to save titles.json");
 }
 
 void TitleDataStore::load()
 {
     std::ifstream f(data_path());
     if (!f.is_open()) {
-        blog(LOG_INFO, "[obs-titles] No saved titles found, starting fresh.");
+        blog(LOG_INFO, "[OBS Titler Pro] No saved titles found, starting fresh.");
         return;
     }
 
@@ -434,8 +434,8 @@ void TitleDataStore::load()
                     t->layers.push_back(layer_from_json(lj));
             titles_.push_back(t);
         }
-        blog(LOG_INFO, "[obs-titles] Loaded %zu title(s).", titles_.size());
+        blog(LOG_INFO, "[OBS Titler Pro] Loaded %zu title(s).", titles_.size());
     } catch (std::exception &e) {
-        blog(LOG_WARNING, "[obs-titles] Failed to parse titles.json: %s", e.what());
+        blog(LOG_WARNING, "[OBS Titler Pro] Failed to parse titles.json: %s", e.what());
     }
 }

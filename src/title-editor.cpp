@@ -397,7 +397,7 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
 TitleEditor::TitleEditor(QWidget *parent)
     : QDialog(parent, Qt::Window)
 {
-    setWindowTitle("Title Editor");
+    setWindowTitle("OBS Titler Pro Editor");
     resize(1280, 760);
     setMinimumSize(900, 600);
 
@@ -702,7 +702,7 @@ void TitleEditor::build_toolbar()
     connect(btn_save, &QPushButton::clicked, this, [this]() {
         TitleDataStore::instance().save();
         if (title_) emit title_saved(title_->id);
-        setWindowTitle("Title Editor  ·  saved");
+        setWindowTitle("OBS Titler Pro Editor  ·  saved");
     });
     toolbar_->addWidget(btn_save);
 }
@@ -873,7 +873,7 @@ void TitleEditor::on_playhead_changed(double t)
 
 void TitleEditor::on_title_modified()
 {
-    if (title_) setWindowTitle("Title Editor  ·  modified");
+    if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
     canvas_->refresh_preview();
     if (timeline_) timeline_->set_title(title_);
     TitleDataStore::instance().notify_change();
@@ -1885,6 +1885,9 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     drag_layer_id_.clear();
     drag_prop_name_.clear();
     drag_keyframe_index_ = -1;
+    drag_start_time_ = 0.0;
+    drag_start_in_ = 0.0;
+    drag_start_out_ = 0.0;
 
     if (ev->pos().y() < ruler_height()) {
         drag_mode_ = DragMode::Playhead;
@@ -1928,6 +1931,16 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
             ev->accept();
             return;
         }
+        if (ev->pos().x() >= std::min(x0, x1) && ev->pos().x() <= std::max(x0, x1)) {
+            drag_mode_ = DragMode::Layer;
+            drag_layer_id_ = layer->id;
+            drag_start_time_ = x_to_time(ev->pos().x());
+            drag_start_in_ = layer->in_time;
+            drag_start_out_ = layer->out_time;
+            setCursor(Qt::ClosedHandCursor);
+            ev->accept();
+            return;
+        }
     }
 }
 
@@ -1965,6 +1978,18 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if (drag_mode_ == DragMode::Layer) {
+        auto layer = title_->find_layer(drag_layer_id_);
+        if (!layer) return;
+        double duration = std::max(obs_frame_duration(), drag_start_out_ - drag_start_in_);
+        double new_in = drag_start_in_ + (t - drag_start_time_);
+        new_in = std::clamp(new_in, 0.0, std::max(0.0, title_->duration - duration));
+        layer->in_time = new_in;
+        layer->out_time = std::min(title_->duration, new_in + duration);
+        update();
+        return;
+    }
+
     auto rows = timeline_rows(title_);
     int row = (ev->pos().y() - ruler_height()) / row_height();
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
@@ -1972,6 +1997,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         int x1 = time_to_x(rows[row].layer->out_time);
         if (std::abs(ev->pos().x() - x0) <= 7 || std::abs(ev->pos().x() - x1) <= 7)
             setCursor(Qt::SizeHorCursor);
+        else if (ev->pos().x() >= std::min(x0, x1) && ev->pos().x() <= std::max(x0, x1))
+            setCursor(Qt::OpenHandCursor);
         else
             unsetCursor();
     } else {
@@ -1983,7 +2010,8 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
 {
     bool changed = drag_mode_ == DragMode::Keyframe ||
                    drag_mode_ == DragMode::TrimIn ||
-                   drag_mode_ == DragMode::TrimOut;
+                   drag_mode_ == DragMode::TrimOut ||
+                   drag_mode_ == DragMode::Layer;
     if (drag_mode_ == DragMode::Keyframe && title_) {
         if (auto layer = title_->find_layer(drag_layer_id_)) {
             for (auto *prop : timeline_properties(*layer)) {
@@ -1999,6 +2027,9 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
     drag_layer_id_.clear();
     drag_prop_name_.clear();
     drag_keyframe_index_ = -1;
+    drag_start_time_ = 0.0;
+    drag_start_in_ = 0.0;
+    drag_start_out_ = 0.0;
     unsetCursor();
     if (changed) emit keyframe_easing_changed();
 }

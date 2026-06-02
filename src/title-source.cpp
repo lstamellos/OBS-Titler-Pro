@@ -354,7 +354,7 @@ static void render_title_frame(TitleSourceData *data,
  * ══════════════════════════════════════════════════════════════════ */
 static const char *source_get_name(void *)
 {
-    return "Title";
+    return "OBS Titler Pro";
 }
 
 static void *source_create(obs_data_t *settings, obs_source_t *source)
@@ -488,5 +488,5 @@ void title_source_register()
     si.get_defaults   = source_get_defaults;
 
     obs_register_source(&si);
-    blog(LOG_INFO, "[obs-titles] Source type registered.");
+    blog(LOG_INFO, "[OBS Titler Pro] Source type registered.");
 }

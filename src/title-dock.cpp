@@ -24,7 +24,7 @@
  *  Constructor
  * ══════════════════════════════════════════════════════════════════ */
 TitleDock::TitleDock(QWidget *parent)
-    : QDockWidget("Titles", parent)
+    : QDockWidget("OBS Titler Pro", parent)
 {
     setFeatures(QDockWidget::DockWidgetMovable |
                 QDockWidget::DockWidgetFloatable);
