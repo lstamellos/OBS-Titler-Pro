@@ -164,8 +164,13 @@ TitleDataStore &TitleDataStore::instance()
 
 void TitleDataStore::notify_change()
 {
-    ++revision_;
+    touch_runtime_change();
     for (auto &cb : change_cbs_) cb();
+}
+
+void TitleDataStore::touch_runtime_change()
+{
+    revision_.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)

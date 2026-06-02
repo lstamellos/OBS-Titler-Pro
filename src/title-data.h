@@ -19,6 +19,7 @@
 #include <memory>
 #include <functional>
 #include <cstdint>
+#include <atomic>
 #include <obs-module.h>
 #include <util/config-file.h>
 
@@ -204,13 +205,14 @@ public:
     using ChangeCallback = std::function<void()>;
     void on_change(ChangeCallback cb) { change_cbs_.push_back(cb); }
     void notify_change();
-    uint64_t revision() const { return revision_; }
+    void touch_runtime_change();
+    uint64_t revision() const { return revision_.load(); }
 
 private:
     TitleDataStore() = default;
     std::vector<std::shared_ptr<Title>>  titles_;
     std::vector<ChangeCallback>          change_cbs_;
-    uint64_t                             revision_ = 0;
+    std::atomic<uint64_t>                revision_ { 0 };
 
     static std::string data_path();
 };

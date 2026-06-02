@@ -466,7 +466,7 @@ static void source_video_tick(void *priv, float seconds)
                 apply_live_text_row(title, title->pending_cue_row);
                 title->current_cue_row = title->pending_cue_row;
                 title->pending_cue_row = -1;
-                TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().touch_runtime_change();
             }
             if (loop_end > loop_start && next_intro_time >= loop_end) {
                 next_intro_time = loop_start + std::fmod(next_intro_time - loop_start,

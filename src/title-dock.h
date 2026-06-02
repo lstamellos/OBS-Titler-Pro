@@ -75,6 +75,8 @@ private:
     QPushButton  *btn_row_up_ = nullptr;
     QPushButton  *btn_row_down_ = nullptr;
     bool          updating_exposed_text_ = false;
+    QTimer       *live_refresh_timer_ = nullptr;
+    uint64_t      seen_store_revision_ = 0;
 
     TitleEditor  *editor_     = nullptr;
 };

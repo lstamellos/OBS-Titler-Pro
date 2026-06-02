@@ -73,13 +73,27 @@ TitleDock::TitleDock(QWidget *parent)
                 QDockWidget::DockWidgetFloatable);
     build_ui();
 
-    /* React to external data changes */
+    /* React to external data changes.  Always marshal back to the dock's
+     * Qt thread so background/source playback changes cannot touch widgets.
+     */
     TitleDataStore::instance().on_change([this]() {
-        if (!updating_exposed_text_)
-            refresh();
+        QTimer::singleShot(0, this, [this]() {
+            if (!updating_exposed_text_)
+                refresh();
+        });
     });
 
     populate_list();
+    seen_store_revision_ = TitleDataStore::instance().revision();
+    live_refresh_timer_ = new QTimer(this);
+    live_refresh_timer_->setInterval(100);
+    connect(live_refresh_timer_, &QTimer::timeout, this, [this]() {
+        uint64_t revision = TitleDataStore::instance().revision();
+        if (revision == seen_store_revision_ || updating_exposed_text_) return;
+        seen_store_revision_ = revision;
+        populate_exposed_text();
+    });
+    live_refresh_timer_->start();
 }
 
 /* ══════════════════════════════════════════════════════════════════
