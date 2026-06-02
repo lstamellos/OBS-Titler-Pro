@@ -15,6 +15,103 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Find-MatchingBraceIndex {
+    param([string]$Text, [int]$OpenIndex)
+    $depth = 0
+    for ($i = $OpenIndex; $i -lt $Text.Length; $i++) {
+        $ch = $Text[$i]
+        if ($ch -eq '{') { $depth++ }
+        elseif ($ch -eq '}') {
+            $depth--
+            if ($depth -eq 0) { return $i }
+        }
+    }
+    return -1
+}
+
+function Remove-CppDefinitionRange {
+    param([string]$Text, [int]$MatchIndex)
+    $lineStart = $Text.LastIndexOf("`n", [Math]::Max(0, $MatchIndex - 1))
+    if ($lineStart -lt 0) { $lineStart = 0 } else { $lineStart++ }
+    $open = $Text.IndexOf('{', $MatchIndex)
+    if ($open -lt 0) { return $Text }
+    $close = Find-MatchingBraceIndex -Text $Text -OpenIndex $open
+    if ($close -lt 0) { return $Text }
+    $end = $close + 1
+    while ($end -lt $Text.Length -and ($Text[$end] -eq "`r" -or $Text[$end] -eq "`n")) { $end++ }
+    return $Text.Remove($lineStart, $end - $lineStart)
+}
+
+function Remove-DuplicateCppDefinitions {
+    param([string]$File, [string[]]$Signatures, [switch]$KeepLast)
+    if (-not (Test-Path $File)) { return }
+    $text = Get-Content -Raw -Path $File
+    $changed = $false
+    foreach ($signature in $Signatures) {
+        while ($true) {
+            $first = $text.IndexOf($signature, [StringComparison]::Ordinal)
+            if ($first -lt 0) { break }
+            $next = $text.IndexOf($signature, $first + $signature.Length, [StringComparison]::Ordinal)
+            if ($next -lt 0) { break }
+            if ($KeepLast) {
+                Write-Host "Removing earlier duplicate definition '$signature' from $File"
+                $text = Remove-CppDefinitionRange -Text $text -MatchIndex $first
+            } else {
+                Write-Host "Removing later duplicate definition '$signature' from $File"
+                $text = Remove-CppDefinitionRange -Text $text -MatchIndex $next
+            }
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        Set-Content -Path $File -Value $text -NoNewline
+    }
+}
+
+function Remove-ObsoleteCppDefinitions {
+    param([string]$File, [string[]]$QualifiedNames)
+    if (-not (Test-Path $File)) { return }
+    $text = Get-Content -Raw -Path $File
+    $changed = $false
+    foreach ($name in $QualifiedNames) {
+        while ($true) {
+            $idx = $text.IndexOf($name, [StringComparison]::Ordinal)
+            if ($idx -lt 0) { break }
+            Write-Host "Removing obsolete definition '$name' from $File"
+            $text = Remove-CppDefinitionRange -Text $text -MatchIndex $idx
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        Set-Content -Path $File -Value $text -NoNewline
+    }
+}
+
+function Repair-KnownMergeArtifacts {
+    param([string]$ScriptRoot)
+    $dock = Join-Path $ScriptRoot "src\title-dock.cpp"
+    $editor = Join-Path $ScriptRoot "src\title-editor.cpp"
+    Remove-DuplicateCppDefinitions -File $dock -Signatures @(
+        "void TitleDock::populate_exposed_text()",
+        "void TitleDock::on_add_live_text_row()",
+        "void TitleDock::on_move_live_text_row_up()",
+        "void TitleDock::on_move_live_text_row_down()",
+        "void TitleDock::select_title(const std::string &id)"
+    )
+    Remove-ObsoleteCppDefinitions -File $dock -QualifiedNames @(
+        "TitleDock::create_template_title",
+        "TitleDock::create_title_from_template"
+    )
+    # The known corrupted editor block was pasted before the valid coordinate
+    # helpers, so keep the last helper body if a duplicate survived restore.
+    Remove-DuplicateCppDefinitions -File $editor -KeepLast -Signatures @(
+        "QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const",
+        "QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const",
+        "QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const"
+    )
+}
+
+
 # Paths
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
@@ -66,6 +163,7 @@ if ($RestoreTrackedSources) {
         Write-Error "Failed to restore tracked source files from HEAD."
         exit 1
     }
+    Repair-KnownMergeArtifacts -ScriptRoot $ScriptDir
 }
 
 
