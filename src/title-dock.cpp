@@ -359,7 +359,8 @@ void TitleDock::populate_exposed_text()
                 updating_exposed_text_ = true;
                 title->live_text_rows[row][col] = text.toStdString();
                 TitleDataStore::instance().save();
-                TitleDataStore::instance().notify_change();
+                TitleDataStore::instance().touch_runtime_change();
+                seen_store_revision_ = TitleDataStore::instance().revision();
                 updating_exposed_text_ = false;
             });
             text_table_->setCellWidget(row, col, edit);
