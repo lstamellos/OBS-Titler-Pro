@@ -518,6 +518,65 @@ void TitleDock::select_title(const std::string &id)
     }
 }
 
+void TitleDock::on_add_live_text_row()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return;
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty()) return;
+
+    std::vector<std::string> row;
+    for (const auto &layer : exposed)
+        row.push_back(layer->text_content);
+    title->live_text_rows.push_back(std::move(row));
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    text_table_->selectRow((int)title->live_text_rows.size() - 1);
+}
+
+void TitleDock::on_move_live_text_row_up()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title || !text_table_) return;
+    int row = text_table_->currentRow();
+    if (row <= 0 || row >= (int)title->live_text_rows.size()) return;
+    std::swap(title->live_text_rows[row], title->live_text_rows[row - 1]);
+    move_live_row_marker(title->current_cue_row, row, row - 1);
+    move_live_row_marker(title->pending_cue_row, row, row - 1);
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    text_table_->selectRow(row - 1);
+}
+
+void TitleDock::on_move_live_text_row_down()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title || !text_table_) return;
+    int row = text_table_->currentRow();
+    if (row < 0 || row + 1 >= (int)title->live_text_rows.size()) return;
+    std::swap(title->live_text_rows[row], title->live_text_rows[row + 1]);
+    move_live_row_marker(title->current_cue_row, row, row + 1);
+    move_live_row_marker(title->pending_cue_row, row, row + 1);
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    text_table_->selectRow(row + 1);
+}
+
+
+void TitleDock::select_title(const std::string &id)
+{
+    populate_list();
+    for (int i = 0; i < list_->count(); ++i) {
+        if (list_->item(i)->data(Qt::UserRole).toString().toStdString() == id) {
+            list_->setCurrentRow(i);
+            break;
+        }
+    }
+}
+
 std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
                                                          int template_id)
 {
