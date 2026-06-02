@@ -540,8 +540,18 @@ void TitleEditor::build_ui()
     title_lbl_->setStyleSheet("background:#1e1e1e; color:#fff; padding:3px;");
     root->addWidget(title_lbl_);
 
-    /* ── Upper split: Canvas | Properties ── */
+    /* ── Upper split: Global Settings | Canvas | Properties ── */
     auto *upper_split = new QSplitter(Qt::Horizontal, this);
+
+    auto *global_panel = new QWidget(upper_split);
+    auto *global_layout = new QVBoxLayout(global_panel);
+    global_layout->setContentsMargins(0, 0, 0, 0);
+    global_layout->setSpacing(4);
+    title_props_ = new TitlePropertiesPanel(global_panel);
+    global_layout->addWidget(title_props_);
+    global_layout->addStretch(1);
+    global_panel->setFixedWidth(300);
+    upper_split->addWidget(global_panel);
 
     canvas_ = new CanvasPreview(upper_split);
     canvas_->setMinimumSize(300, 200);
@@ -555,8 +565,9 @@ void TitleEditor::build_ui()
     side_layout->addWidget(props_, 1);
     side_panel->setFixedWidth(300);
     upper_split->addWidget(side_panel);
-    upper_split->setStretchFactor(0, 3);
-    upper_split->setStretchFactor(1, 1);
+    upper_split->setStretchFactor(0, 0);
+    upper_split->setStretchFactor(1, 3);
+    upper_split->setStretchFactor(2, 1);
 
     /* ── Lower split: LayerStack | Timeline ── */
     auto *lower_split = new QSplitter(Qt::Horizontal, this);
@@ -565,9 +576,6 @@ void TitleEditor::build_ui()
     auto *layers_layout = new QVBoxLayout(layers_panel);
     layers_layout->setContentsMargins(0, 0, 0, 0);
     layers_layout->setSpacing(0);
-
-    title_props_ = new TitlePropertiesPanel(layers_panel);
-    layers_layout->addWidget(title_props_);
 
     auto *layer_transport = new QToolBar(layers_panel);
     layer_transport->setMovable(false);

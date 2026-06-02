@@ -542,6 +542,7 @@ static void source_video_tick(void *priv, float seconds)
 
     if (title->cue_revision != data->seen_cue_revision) {
         double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
+        double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
         bool has_pending = title->pending_cue_row >= 0 &&
                            title->pending_cue_row < (int)title->live_text_rows.size();
         if (title->playback_mode == 1) {
@@ -552,6 +553,9 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = 0.0;
                 data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
             }
+        } else if (title->playback_mode == 2 && has_pending) {
+            data->playhead = pause_time;
+            data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
         } else {
             if (has_pending) {
                 apply_live_text_row(title, title->pending_cue_row);
@@ -574,16 +578,28 @@ static void source_video_tick(void *priv, float seconds)
         double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
         double loop_end = std::clamp(title->loop_end, loop_start, title->duration);
 
-        if (data->cue_phase == TitleSourceData::CuePhase::FreeRun && title->playback_mode == 1 && title->loop_type == 1) {
+        const bool ping_pong_loop = title->playback_mode == 1 && title->loop_type == 1 &&
+                                    (data->cue_phase == TitleSourceData::CuePhase::FreeRun ||
+                                     data->cue_phase == TitleSourceData::CuePhase::IntroLoop);
+        if (ping_pong_loop) {
             data->playhead += data->playback_reverse ? -dt : dt;
         } else {
             data->playhead += dt;
         }
 
-        if (data->cue_phase == TitleSourceData::CuePhase::IntroLoop && loop_end > loop_start &&
-            data->playhead >= loop_end) {
-            data->playhead = loop_start + std::fmod(data->playhead - loop_start,
-                                                    std::max(0.001, loop_end - loop_start));
+        if (data->cue_phase == TitleSourceData::CuePhase::IntroLoop && loop_end > loop_start) {
+            double loop_len = std::max(0.001, loop_end - loop_start);
+            if (title->loop_type == 1) {
+                if (!data->playback_reverse && data->playhead >= loop_end) {
+                    data->playhead = loop_end - std::fmod(data->playhead - loop_end, loop_len);
+                    data->playback_reverse = true;
+                } else if (data->playback_reverse && data->playhead <= loop_start) {
+                    data->playhead = loop_start + std::fmod(loop_start - data->playhead, loop_len);
+                    data->playback_reverse = false;
+                }
+            } else if (data->playhead >= loop_end) {
+                data->playhead = loop_start + std::fmod(data->playhead - loop_start, loop_len);
+            }
         } else if (data->cue_phase == TitleSourceData::CuePhase::OutroThenIntro &&
                    data->playhead >= title->duration) {
             double next_intro_time = std::max(0.0, data->playhead - title->duration);
@@ -593,12 +609,17 @@ static void source_video_tick(void *priv, float seconds)
                 title->pending_cue_row = -1;
                 TitleDataStore::instance().touch_runtime_change();
             }
-            if (loop_end > loop_start && next_intro_time >= loop_end) {
-                next_intro_time = loop_start + std::fmod(next_intro_time - loop_start,
-                                                         std::max(0.001, loop_end - loop_start));
+            if (title->playback_mode == 1) {
+                if (loop_end > loop_start && next_intro_time >= loop_end) {
+                    next_intro_time = loop_start + std::fmod(next_intro_time - loop_start,
+                                                             std::max(0.001, loop_end - loop_start));
+                }
+                data->playhead = std::clamp(next_intro_time, 0.0, title->duration);
+                data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+            } else {
+                data->playhead = 0.0;
+                data->cue_phase = TitleSourceData::CuePhase::FreeRun;
             }
-            data->playhead = std::clamp(next_intro_time, 0.0, title->duration);
-            data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
             data->playback_reverse = false;
         } else if (data->cue_phase == TitleSourceData::CuePhase::FreeRun) {
             if (title->playback_mode == 1) {
