@@ -65,10 +65,10 @@ function Assert-UniqueSourceDefinition {
     $Text = Get-Content -Raw -Path $File
     foreach ($Definition in $Definitions) {
         # Count only real out-of-class function bodies that start at the
-        # beginning of a source line. This avoids false positives from calls,
-        # comments, string literals, or diagnostic text that happens to contain
-        # the same function signature fragment.
-        $Pattern = "(?m)^[`t ]*" + [regex]::Escape($Definition)
+        # beginning of a source line and are followed by an opening brace. This
+        # avoids false positives from calls, comments, declarations, strings,
+        # or diagnostic text that happens to contain the same signature fragment.
+        $Pattern = "(?ms)^[`t ]*" + [regex]::Escape($Definition) + "[^;{]*\{"
         $Count = ([regex]::Matches($Text, $Pattern)).Count
         if ($Count -gt 1) {
             Write-Error "Duplicate definition detected in ${File}: '$Definition' appears $Count times. Remove the duplicate body before building."
