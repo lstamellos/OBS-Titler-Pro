@@ -8,6 +8,7 @@ param(
     [string]$InstallRoot,
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
+    [switch]$Clean,
     [switch]$SkipInstall
 )
 
@@ -122,6 +123,12 @@ if (-not (Test-ObsSdkDir $ObsSdkDir)) {
     exit 1
 }
 Write-Host "Found OBS SDK: $ObsSdkDir"
+
+if ($Clean -and (Test-Path $BuildDir)) {
+    Write-Host "`n=== Cleaning previous build directory ==="
+    Write-Host "Removing: $BuildDir"
+    Remove-Item -Recurse -Force $BuildDir
+}
 
 # 4. Configure CMake
 Write-Host "`n=== Configuring CMake ==="
