@@ -48,81 +48,11 @@ $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 Write-Host "=== Starting OBS Titler Pro build process ==="
 
 
-# Check for accidental duplicate out-of-class bodies in large UI
-# translation units. This is intentionally warning-only: MSVC remains the
-# source of truth, and this helper must not block builds due to scanner
-# false positives on contributor machines.
-function Assert-UniqueSourceDefinition {
-    param(
-        [string]$File,
-        [string[]]$Definitions
-    )
+# MSVC is the authoritative duplicate-definition checker. Do not run an
+# additional source scanner here: previous scanner versions produced false
+# positives on valid CanvasPreview helper declarations/calls and blocked the
+# Windows build before compilation could start.
 
-    if (-not (Test-Path $File)) {
-        Write-Error "Source file not found: $File"
-        exit 1
-    }
-
-    $Lines = Get-Content -Path $File
-    foreach ($Definition in $Definitions) {
-        # Count only real out-of-class function bodies. A body must start at
-        # the beginning of a source line with the watched signature fragment
-        # and must be followed by an opening brace on that line or on the next
-        # non-empty line. This avoids false positives from calls, declarations,
-        # comments, strings, or diagnostic text containing the same fragment.
-        $Count = 0
-        for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
-            $Line = $Lines[$Index].TrimStart()
-            if (-not $Line.StartsWith($Definition)) { continue }
-            if ($Line.Contains(';')) { continue }
-
-            $HasBodyBrace = $Line.Contains('{')
-            if (-not $HasBodyBrace) {
-                for ($Next = $Index + 1; $Next -lt $Lines.Count; $Next++) {
-                    $NextLine = $Lines[$Next].Trim()
-                    if ([string]::IsNullOrWhiteSpace($NextLine)) { continue }
-                    $HasBodyBrace = $NextLine.StartsWith('{')
-                    break
-                }
-            }
-
-            if ($HasBodyBrace) { $Count++ }
-        }
-
-        if ($Count -gt 1) {
-            Write-Warning "Possible duplicate definition detected in ${File}: '$Definition' appears $Count times. Continuing so the compiler can provide the authoritative diagnostic if this is a real duplicate."
-        }
-    }
-}
-
-$TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
-Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
-    "void TitleEditor::keyPressEvent(",
-    "void CanvasPreview::set_safe_guides_visible(",
-    "void CanvasPreview::refresh_preview(",
-    "std::shared_ptr<Layer> CanvasPreview::selected_layer(",
-    "QRectF CanvasPreview::layer_local_rect(",
-    "double CanvasPreview::view_scale(",
-    "QPointF CanvasPreview::view_origin(",
-    "QPointF CanvasPreview::view_to_canvas(",
-    "QPointF CanvasPreview::canvas_to_view(",
-    "QPointF CanvasPreview::canvas_to_layer(",
-    "QPointF CanvasPreview::layer_to_canvas(",
-    "CanvasPreview::DragMode CanvasPreview::hit_test_selected(",
-    "void CanvasPreview::apply_drag(",
-    "void TimelineWidget::contextMenuEvent(",
-    "void TimelineWidget::wheelEvent(",
-    "TitlePropertiesPanel::TitlePropertiesPanel(",
-    "void TitlePropertiesPanel::set_title(",
-    "void TitlePropertiesPanel::load_values("
-)
-
-$TitleDockSource = Join-Path $ScriptDir "src\title-dock.cpp"
-Assert-UniqueSourceDefinition -File $TitleDockSource -Definitions @(
-    "void TitleDock::select_title(",
-    "std::shared_ptr<Title> TitleDock::create_template_title(",
-    "void TitleDock::create_title_from_template("
-)
 
 # 1. Verify CMake and Visual Studio
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
