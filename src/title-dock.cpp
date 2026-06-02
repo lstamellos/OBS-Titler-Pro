@@ -172,6 +172,22 @@ void TitleDock::build_ui()
     sections->setStretchFactor(0, 2);
     sections->setStretchFactor(1, 1);
 
+    /* ── exposed text section ── */
+    text_editor_lbl_ = new QLabel("Live text", container_);
+    text_editor_lbl_->setStyleSheet("font-weight:bold;color:#ddd;margin-top:4px;");
+    root->addWidget(text_editor_lbl_);
+
+    text_table_ = new QTableWidget(container_);
+    text_table_->setRowCount(1);
+    text_table_->setMinimumHeight(72);
+    text_table_->setAlternatingRowColors(false);
+    text_table_->verticalHeader()->hide();
+    text_table_->horizontalHeader()->setStretchLastSection(true);
+    text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    text_table_->setSelectionMode(QAbstractItemView::NoSelection);
+    text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    root->addWidget(text_table_, 0);
+
     /* ── status ── */
     status_lbl_ = new QLabel("No title selected", container_);
     status_lbl_->setAlignment(Qt::AlignCenter);
