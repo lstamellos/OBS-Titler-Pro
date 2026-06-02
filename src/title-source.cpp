@@ -25,6 +25,8 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <algorithm>
+#include <cctype>
 
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
@@ -93,16 +95,25 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     /* Font */
     PangoFontDescription *fdesc =
         pango_font_description_from_string(layer.font_family.c_str());
+    int font_size = layer.font_size;
+    if (layer.text_superscript || layer.text_subscript)
+        font_size = std::max(1, (int)std::round(font_size * 0.65));
     pango_font_description_set_size(fdesc,
-        layer.font_size * PANGO_SCALE);
+        font_size * PANGO_SCALE);
     if (layer.font_bold)
         pango_font_description_set_weight(fdesc, PANGO_WEIGHT_BOLD);
     if (layer.font_italic)
         pango_font_description_set_style(fdesc, PANGO_STYLE_ITALIC);
+    if (layer.text_small_caps)
+        pango_font_description_set_variant(fdesc, PANGO_VARIANT_SMALL_CAPS);
     pango_layout_set_font_description(layout, fdesc);
     pango_font_description_free(fdesc);
 
-    pango_layout_set_text(layout, layer.text_content.c_str(), -1);
+    std::string display_text = layer.text_content;
+    if (layer.text_all_caps)
+        std::transform(display_text.begin(), display_text.end(), display_text.begin(),
+                       [](unsigned char ch) { return (char)std::toupper(ch); });
+    pango_layout_set_text(layout, display_text.c_str(), -1);
     pango_layout_set_width(layout, canvas_w * PANGO_SCALE);
 
     /* Horizontal alignment */
@@ -118,6 +129,8 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     double off_y = 0.0;
     if (layer.align_v == 1) off_y = -ph / 2.0;
     if (layer.align_v == 2) off_y = -(double)ph;
+    if (layer.text_superscript) off_y -= ph * 0.35;
+    if (layer.text_subscript) off_y += ph * 0.35;
     double off_x = -(double)canvas_w / 2.0;  /* layout width = canvas_w */
 
     cairo_translate(cr, off_x, off_y);
