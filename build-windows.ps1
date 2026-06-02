@@ -9,6 +9,7 @@ param(
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
     [switch]$Clean,
+    [switch]$RestoreTrackedSources,
     [switch]$SkipInstall
 )
 
@@ -47,6 +48,25 @@ $ObsPluginBin = Join-Path $ObsPluginRoot "bin\$ObsArchDir"
 $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
 Write-Host "=== Starting OBS Titler Pro build process ==="
+
+if ($RestoreTrackedSources) {
+    Write-Host "`n=== Restoring tracked source files from HEAD ==="
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Error "-RestoreTrackedSources requires git to be available in PATH."
+        exit 1
+    }
+    $trackedSources = @(
+        "src/title-dock.cpp",
+        "src/title-dock.h",
+        "src/title-editor.cpp",
+        "src/title-editor.h"
+    )
+    & git -C $ScriptDir restore --source HEAD -- $trackedSources
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to restore tracked source files from HEAD."
+        exit 1
+    }
+}
 
 
 # MSVC is the authoritative duplicate-definition checker. Do not run an
