@@ -31,9 +31,11 @@
 #include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QPushButton>
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QTimer>
+#include <QPoint>
 #include <memory>
 
 /* Forward declarations for sub-widgets */
@@ -94,6 +96,7 @@ private:
     QToolBar        *toolbar_   = nullptr;
     QAction         *act_play_  = nullptr;
     QAction         *act_rew_   = nullptr;
+    std::shared_ptr<Layer> copied_layer_;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -140,12 +143,16 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void refresh();
+    void set_layer_clipboard_available(bool available);
 
 signals:
     void layer_selected(const std::string &layer_id);
     void layer_visibility_changed(const std::string &layer_id, bool v);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
+    void clone_layer_requested(const std::string &layer_id);
+    void copy_layer_requested(const std::string &layer_id);
+    void paste_layer_requested();
     void delete_layer_requested(const std::string &layer_id);
 
 private slots:
@@ -157,9 +164,11 @@ private slots:
 
 private:
     void populate();
+    void show_context_menu(const QPoint &pos);
     std::string selected_id() const;
 
     std::shared_ptr<Title> title_;
+    bool          can_paste_layer_ = false;
     QListWidget  *list_     = nullptr;
     QPushButton  *btn_add_text_ = nullptr;
     QPushButton  *btn_add_rect_ = nullptr;
@@ -238,6 +247,10 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+    QComboBox       *cmb_text_style_ = nullptr;
+    QPushButton     *btn_text_color_ = nullptr;
+    QPushButton     *btn_outline_color_ = nullptr;
+    QDoubleSpinBox  *spn_outline_width_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;

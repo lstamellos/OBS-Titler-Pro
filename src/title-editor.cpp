@@ -31,6 +31,7 @@
 #include <QFontDatabase>
 #include <QScrollArea>
 #include <QFrame>
+#include <QMenu>
 #include <cmath>
 #include <algorithm>
 
@@ -45,6 +46,63 @@ static const QColor C_TEXT     { 0xcccccc };
 static const QColor C_RULER    { 0x1e1e1e };
 static const QColor C_KF_DOT   { 0xf0a020 };
 static const QColor C_PLAYHEAD { 0xff4444 };
+
+
+static QColor color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xff,
+                  (argb >> 8) & 0xff,
+                  argb & 0xff,
+                  (argb >> 24) & 0xff);
+}
+
+static uint32_t argb_from_color(const QColor &color)
+{
+    return ((uint32_t)color.alpha() << 24) |
+           ((uint32_t)color.red() << 16) |
+           ((uint32_t)color.green() << 8) |
+           (uint32_t)color.blue();
+}
+
+static QString styled_text_for_layer(const Layer &layer)
+{
+    QString text = QString::fromStdString(layer.text_content);
+    return layer.text_all_caps ? text.toUpper() : text;
+}
+
+static void apply_text_style_to_font(QFont &font, const Layer &layer)
+{
+    font.setBold(layer.font_bold);
+    font.setItalic(layer.font_italic);
+    font.setCapitalization(layer.text_small_caps ? QFont::SmallCaps : QFont::MixedCase);
+    if (layer.text_superscript || layer.text_subscript)
+        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
+}
+
+static QRectF baseline_adjusted_rect(QRectF rect, const Layer &layer)
+{
+    if (layer.text_superscript)
+        rect.translate(0.0, -rect.height() * 0.18);
+    else if (layer.text_subscript)
+        rect.translate(0.0, rect.height() * 0.18);
+    return rect;
+}
+
+static void draw_text_outline(QPainter &p, const QRectF &rect, int flags,
+                              const QString &text, const Layer &layer)
+{
+    QColor stroke = color_from_argb(layer.stroke_color);
+    if (layer.stroke_width <= 0.0f || stroke.alpha() == 0) return;
+    p.setPen(stroke);
+    int radius = std::max(1, (int)std::ceil(layer.stroke_width));
+    for (int dx = -radius; dx <= radius; ++dx) {
+        for (int dy = -radius; dy <= radius; ++dy) {
+            if (dx == 0 && dy == 0) continue;
+            if (std::hypot((double)dx, (double)dy) > radius + 0.25) continue;
+            p.drawText(rect.translated(dx, dy), flags, text);
+        }
+    }
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor
@@ -147,6 +205,49 @@ void TitleEditor::build_ui()
                 l->out_time = title_->duration;
                 title_->add_layer(l);
                 layers_->refresh();
+                TitleDataStore::instance().notify_change();
+            });
+
+    auto duplicate_layer = [this](const Layer &source) {
+        auto copy = std::make_shared<Layer>(source);
+        copy->id = TitleDataStore::make_uuid();
+        copy->name = source.name.empty() ? "Layer copy" : source.name + " copy";
+        copy->pos_x.static_value += 20.0;
+        copy->pos_y.static_value += 20.0;
+        for (auto &kf : copy->pos_x.keyframes) kf.value += 20.0;
+        for (auto &kf : copy->pos_y.keyframes) kf.value += 20.0;
+        return copy;
+    };
+
+    connect(layers_, &LayerStack::clone_layer_requested,
+            this, [this, duplicate_layer](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                auto clone = duplicate_layer(*source);
+                title_->add_layer(clone);
+                layers_->refresh();
+                on_layer_selected(clone->id);
+                TitleDataStore::instance().notify_change();
+            });
+
+    connect(layers_, &LayerStack::copy_layer_requested,
+            this, [this](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                copied_layer_ = std::make_shared<Layer>(*source);
+                layers_->set_layer_clipboard_available(true);
+            });
+
+    connect(layers_, &LayerStack::paste_layer_requested,
+            this, [this, duplicate_layer]() {
+                if (!title_ || !copied_layer_) return;
+                auto pasted = duplicate_layer(*copied_layer_);
+                title_->add_layer(pasted);
+                layers_->refresh();
+                layers_->set_layer_clipboard_available(true);
+                on_layer_selected(pasted->id);
                 TitleDataStore::instance().notify_change();
             });
 
@@ -406,10 +507,8 @@ void CanvasPreview::render_to_pixmap()
                        (layer->text_color >> 24) & 0xFF );
             QFont f(QString::fromStdString(layer->font_family));
             f.setPixelSize(layer->font_size);
-            f.setBold(layer->font_bold);
-            f.setItalic(layer->font_italic);
+            apply_text_style_to_font(f, *layer);
             p.setFont(f);
-            p.setPen(tc);
             Qt::AlignmentFlag ha = Qt::AlignHCenter;
             if (layer->align_h == 0) ha = Qt::AlignLeft;
             if (layer->align_h == 2) ha = Qt::AlignRight;
@@ -419,8 +518,11 @@ void CanvasPreview::render_to_pixmap()
             /* Draw centred on origin */
             QRectF tr(-title_->width/2.0, -title_->height/2.0,
                        title_->width, title_->height);
-            p.drawText(tr, ha | va,
-                       QString::fromStdString(layer->text_content));
+            tr = baseline_adjusted_rect(tr, *layer);
+            QString display_text = styled_text_for_layer(*layer);
+            draw_text_outline(p, tr, ha | va, display_text, *layer);
+            p.setPen(tc);
+            p.drawText(tr, ha | va, display_text);
         }
 
         /* Selection box */
@@ -537,11 +639,14 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
         "QListWidget::item{padding:3px 4px;border-bottom:1px solid #2a2a2a;}"
         "QListWidget::item:selected{background:#0078d4;color:#fff;}"
         "QListWidget::item:hover{background:#252525;}");
+    list_->setContextMenuPolicy(Qt::CustomContextMenu);
     vl->addWidget(list_, 1);
 
     connect(btn_add_text_, &QPushButton::clicked, this, &LayerStack::on_add_text);
     connect(btn_add_rect_, &QPushButton::clicked, this, &LayerStack::on_add_rect);
     connect(btn_del_,      &QPushButton::clicked, this, &LayerStack::on_delete);
+    connect(list_, &QListWidget::customContextMenuRequested,
+            this, &LayerStack::show_context_menu);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &LayerStack::on_selection_changed);
 }
@@ -568,6 +673,41 @@ void LayerStack::populate()
         list_->addItem(item);
     }
     list_->blockSignals(false);
+}
+
+void LayerStack::set_layer_clipboard_available(bool available)
+{
+    can_paste_layer_ = available;
+}
+
+void LayerStack::show_context_menu(const QPoint &pos)
+{
+    if (!list_) return;
+    QListWidgetItem *item = list_->itemAt(pos);
+    if (item) list_->setCurrentItem(item);
+
+    std::string id = selected_id();
+    bool has_layer = !id.empty() && title_ && title_->find_layer(id) != nullptr;
+
+    QMenu menu(this);
+    QMenu *layer_menu = menu.addMenu("Layer");
+    QAction *clone_action = layer_menu->addAction("Clone");
+    QAction *copy_action = layer_menu->addAction("Copy");
+    QAction *paste_action = layer_menu->addAction("Paste");
+    layer_menu->addSeparator();
+    QAction *delete_action = layer_menu->addAction("Delete");
+
+    clone_action->setEnabled(has_layer);
+    copy_action->setEnabled(has_layer);
+    paste_action->setEnabled(can_paste_layer_);
+    delete_action->setEnabled(has_layer);
+
+    QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == clone_action) emit clone_layer_requested(id);
+    else if (chosen == copy_action) emit copy_layer_requested(id);
+    else if (chosen == paste_action) emit paste_layer_requested();
+    else if (chosen == delete_action) emit delete_layer_requested(id);
 }
 
 std::string LayerStack::selected_id() const
@@ -832,14 +972,31 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_bold_->setStyleSheet("color:#ccc;");
     chk_italic_->setStyleSheet("color:#ccc;");
 
+    cmb_text_style_ = new QComboBox(inner);
+    cmb_text_style_->addItem("Normal", 0);
+    cmb_text_style_->addItem("All caps", 1);
+    cmb_text_style_->addItem("Small caps", 2);
+    cmb_text_style_->addItem("Superscript", 3);
+    cmb_text_style_->addItem("Subscript", 4);
+    cmb_text_style_->setStyleSheet(cmb_font_->styleSheet());
+
+    btn_text_color_ = new QPushButton(inner);
+    btn_outline_color_ = new QPushButton(inner);
+    spn_outline_width_ = mk_dspin(0.0, 100.0, 0.5);
+    spn_outline_width_->setToolTip("Outline thickness in pixels; set to 0 to disable.");
+
     txfl->addRow("Text:",   txt_content_);
     txfl->addRow("Font:",   cmb_font_);
     txfl->addRow("Size:",   spn_size_);
+    txfl->addRow("Text style:", cmb_text_style_);
     auto *bi_row = new QHBoxLayout();
     bi_row->addWidget(chk_bold_);
     bi_row->addWidget(chk_italic_);
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
+    txfl->addRow("Color:", btn_text_color_);
+    txfl->addRow("Outline color:", btn_outline_color_);
+    txfl->addRow("Outline width:", spn_outline_width_);
     vl->addWidget(txt_box);
 
     vl->addStretch();
@@ -884,6 +1041,40 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, emit_change](bool v){
                 if (layer_) { layer_->font_italic = v; emit_change(); }
             });
+    connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, emit_change](int idx){
+                if (!layer_) return;
+                int style = cmb_text_style_->itemData(idx).toInt();
+                layer_->text_all_caps = style == 1;
+                layer_->text_small_caps = style == 2;
+                layer_->text_superscript = style == 3;
+                layer_->text_subscript = style == 4;
+                emit_change();
+            });
+    connect(btn_text_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor picked = QColorDialog::getColor(color_from_argb(layer_->text_color), this,
+                                                        "Text Color", QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->text_color = argb_from_color(picked);
+                emit_change();
+                load_values();
+            });
+    connect(btn_outline_color_, &QPushButton::clicked,
+            this, [this, emit_change]() {
+                if (!layer_) return;
+                QColor picked = QColorDialog::getColor(color_from_argb(layer_->stroke_color), this,
+                                                        "Outline Color", QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                layer_->stroke_color = argb_from_color(picked);
+                emit_change();
+                load_values();
+            });
+    connect(spn_outline_width_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, emit_change](double v){
+                if (layer_) { layer_->stroke_width = (float)v; emit_change(); }
+            });
 }
 
 void PropertiesPanel::set_title(std::shared_ptr<Title> t)
@@ -922,6 +1113,19 @@ void PropertiesPanel::load_values()
     spn_size_->setValue(layer_->font_size);
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
+    int text_style = layer_->text_all_caps ? 1 : (layer_->text_small_caps ? 2 :
+                     (layer_->text_superscript ? 3 : (layer_->text_subscript ? 4 : 0)));
+    int style_idx = cmb_text_style_->findData(text_style);
+    cmb_text_style_->setCurrentIndex(style_idx >= 0 ? style_idx : 0);
+    auto style_color_button = [](QPushButton *button, uint32_t argb) {
+        QColor c = color_from_argb(argb);
+        button->setText(c.alpha() == 0 ? "Transparent" : c.name(QColor::HexArgb));
+        button->setStyleSheet(QString("QPushButton{color:#fff;background:%1;border:1px solid #555;border-radius:2px;padding:2px;}")
+                              .arg(c.alpha() == 0 ? QStringLiteral("#222") : c.name(QColor::HexRgb)));
+    };
+    style_color_button(btn_text_color_, layer_->text_color);
+    style_color_button(btn_outline_color_, layer_->stroke_color);
+    spn_outline_width_->setValue(layer_->stroke_width);
 
     blockSignals(blocked);
 }
