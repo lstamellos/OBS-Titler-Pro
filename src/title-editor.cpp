@@ -1367,8 +1367,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
     }
 
     dirty_ = true;
+    drag_changed_ = true;
     update();
-    emit layer_geometry_changed();
 }
 
 void CanvasPreview::render_to_pixmap()
@@ -1564,6 +1564,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     auto layer = selected_layer();
     if (!layer || drag_mode_ == DragMode::None) return;
 
+    drag_changed_ = false;
     drag_start_canvas_ = view_to_canvas(ev->pos());
     double lt = playhead_ - layer->in_time;
     drag_start_x_ = layer->pos_x.evaluate(lt);
@@ -1594,8 +1595,12 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 {
     if (ev->button() == Qt::LeftButton && drag_mode_ != DragMode::None) {
+        bool changed = drag_changed_;
         drag_mode_ = DragMode::None;
+        drag_changed_ = false;
         unsetCursor();
+        if (changed)
+            emit layer_geometry_changed();
         ev->accept();
     }
 }

@@ -182,6 +182,7 @@ private:
     bool safe_guides_visible_ = false;
 
     DragMode drag_mode_ = DragMode::None;
+    bool drag_changed_ = false;
     QPointF drag_start_canvas_;
     double drag_start_x_ = 0.0;
     double drag_start_y_ = 0.0;
