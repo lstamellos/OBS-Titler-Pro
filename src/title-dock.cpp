@@ -418,7 +418,7 @@ void TitleDock::populate_exposed_text()
             normalize_live_text_rows(title, exposed_now);
             if (row < 0 || row >= (int)title->live_text_rows.size()) return;
             updating_exposed_text_ = true;
-            if (title->current_cue_row >= 0 && title->current_cue_row != row) {
+            if (title->playback_mode == 1 && title->current_cue_row >= 0 && title->current_cue_row != row) {
                 title->pending_cue_row = row;
             } else {
                 for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col)

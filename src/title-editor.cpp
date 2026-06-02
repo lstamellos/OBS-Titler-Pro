@@ -551,8 +551,6 @@ void TitleEditor::build_ui()
     auto *side_layout = new QVBoxLayout(side_panel);
     side_layout->setContentsMargins(0, 0, 0, 0);
     side_layout->setSpacing(4);
-    title_props_ = new TitlePropertiesPanel(side_panel);
-    side_layout->addWidget(title_props_);
     props_ = new PropertiesPanel(side_panel);
     side_layout->addWidget(props_, 1);
     side_panel->setFixedWidth(300);
@@ -567,6 +565,9 @@ void TitleEditor::build_ui()
     auto *layers_layout = new QVBoxLayout(layers_panel);
     layers_layout->setContentsMargins(0, 0, 0, 0);
     layers_layout->setSpacing(0);
+
+    title_props_ = new TitlePropertiesPanel(layers_panel);
+    layers_layout->addWidget(title_props_);
 
     auto *layer_transport = new QToolBar(layers_panel);
     layer_transport->setMovable(false);
@@ -2246,16 +2247,18 @@ void TimelineWidget::paintEvent(QPaintEvent *)
     }
 
     if (title_) {
-        int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, dur));
-        int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, dur));
-        if (loop_x1 > loop_x0) {
-            p.fillRect(loop_x0, 18, loop_x1 - loop_x0, rh - 18, QColor(0x00, 0x78, 0xd4, 45));
-            p.setPen(QPen(QColor(0x20, 0xa0, 0xff), 2));
-            p.drawLine(loop_x0, 18, loop_x0, H);
-            p.drawLine(loop_x1, 18, loop_x1, H);
-            p.setPen(QColor(0xa8, 0xd8, 0xff));
-            p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop in");
-            p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop out");
+        if (title_->playback_mode == 1) {
+            int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, dur));
+            int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, dur));
+            if (loop_x1 > loop_x0) {
+                p.fillRect(loop_x0, 18, loop_x1 - loop_x0, rh - 18, QColor(0x00, 0x78, 0xd4, 45));
+                p.setPen(QPen(QColor(0x20, 0xa0, 0xff), 2));
+                p.drawLine(loop_x0, 18, loop_x0, H);
+                p.drawLine(loop_x1, 18, loop_x1, H);
+                p.setPen(QColor(0xa8, 0xd8, 0xff));
+                p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop in");
+                p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, "Loop out");
+            }
         }
         if (title_->playback_mode == 2) {
             int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, dur));
@@ -2487,19 +2490,21 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
                 return;
             }
         }
-        int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, title_->duration));
-        int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, title_->duration));
-        if (std::abs(ev->pos().x() - loop_x0) <= 8) {
-            drag_mode_ = DragMode::LoopStart;
-            setCursor(Qt::SizeHorCursor);
-            ev->accept();
-            return;
-        }
-        if (std::abs(ev->pos().x() - loop_x1) <= 8) {
-            drag_mode_ = DragMode::LoopEnd;
-            setCursor(Qt::SizeHorCursor);
-            ev->accept();
-            return;
+        if (title_->playback_mode == 1) {
+            int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, title_->duration));
+            int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, title_->duration));
+            if (std::abs(ev->pos().x() - loop_x0) <= 8) {
+                drag_mode_ = DragMode::LoopStart;
+                setCursor(Qt::SizeHorCursor);
+                ev->accept();
+                return;
+            }
+            if (std::abs(ev->pos().x() - loop_x1) <= 8) {
+                drag_mode_ = DragMode::LoopEnd;
+                setCursor(Qt::SizeHorCursor);
+                ev->accept();
+                return;
+            }
         }
         drag_mode_ = DragMode::Playhead;
         double t = std::clamp(x_to_time(ev->pos().x()), 0.0, title_->duration);
@@ -2831,6 +2836,10 @@ void TitlePropertiesPanel::load_values()
     auto *form = qobject_cast<QFormLayout *>(layout());
     cmb_loop_type_->setVisible(show_loop);
     if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(cmb_loop_type_))) label->setVisible(show_loop);
+    spn_loop_start_->setVisible(show_loop);
+    if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(spn_loop_start_))) label->setVisible(show_loop);
+    spn_loop_end_->setVisible(show_loop);
+    if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(spn_loop_end_))) label->setVisible(show_loop);
     spn_pause_frame_->setVisible(show_pause);
     if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(spn_pause_frame_))) label->setVisible(show_pause);
     spn_pause_time_->setVisible(show_pause);

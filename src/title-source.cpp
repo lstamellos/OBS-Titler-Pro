@@ -544,12 +544,23 @@ static void source_video_tick(void *priv, float seconds)
         double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
         bool has_pending = title->pending_cue_row >= 0 &&
                            title->pending_cue_row < (int)title->live_text_rows.size();
-        if (has_pending) {
-            data->playhead = loop_end;
-            data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
+        if (title->playback_mode == 1) {
+            if (has_pending) {
+                data->playhead = loop_end;
+                data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
+            } else {
+                data->playhead = 0.0;
+                data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+            }
         } else {
+            if (has_pending) {
+                apply_live_text_row(title, title->pending_cue_row);
+                title->current_cue_row = title->pending_cue_row;
+                title->pending_cue_row = -1;
+                TitleDataStore::instance().touch_runtime_change();
+            }
             data->playhead = 0.0;
-            data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+            data->cue_phase = TitleSourceData::CuePhase::FreeRun;
         }
         data->seen_cue_revision = title->cue_revision;
         data->playback_reverse = false;
