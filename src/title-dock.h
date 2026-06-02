@@ -50,6 +50,9 @@ private slots:
     void on_edit();
     void on_add_to_scene();
     void on_selection_changed();
+    void on_add_template_lower_third();
+    void on_add_template_center_title();
+    void on_add_template_ticker();
     void on_add_live_text_row();
     void on_move_live_text_row_up();
     void on_move_live_text_row_down();

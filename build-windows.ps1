@@ -87,6 +87,72 @@ function Remove-ObsoleteCppDefinitions {
     }
 }
 
+
+function Insert-BeforeMarker {
+    param([string]$Text, [string]$Marker, [string]$Insertion)
+    $idx = $Text.IndexOf($Marker, [StringComparison]::Ordinal)
+    if ($idx -lt 0) { return $Text + "`n" + $Insertion }
+    return $Text.Insert($idx, $Insertion + "`n")
+}
+
+function Ensure-TitleEditorCoreDefinitions {
+    param([string]$File)
+    if (-not (Test-Path $File)) { return }
+    $text = Get-Content -Raw -Path $File
+    $changed = $false
+
+    if ($text.IndexOf("void TitleEditor::on_title_modified()", [StringComparison]::Ordinal) -lt 0) {
+        Write-Host "Restoring missing TitleEditor::on_title_modified definition in $File"
+        $definition = @'
+void TitleEditor::on_title_modified()
+{
+    if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
+    if (canvas_) canvas_->refresh_preview();
+    if (title_props_) title_props_->set_title(title_);
+    if (timeline_) timeline_->set_title(title_);
+    push_undo_snapshot();
+    TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
+}
+'@
+        $text = Insert-BeforeMarker -Text $text -Marker "/* ══════════════════════════════════════════════════════════════════`n *  CanvasPreview" -Insertion $definition
+        $changed = $true
+    }
+
+    $canvasDefinitions = ""
+    if ($text.IndexOf("CanvasPreview::CanvasPreview(QWidget *parent)", [StringComparison]::Ordinal) -lt 0) {
+        Write-Host "Restoring missing CanvasPreview constructor in $File"
+        $canvasDefinitions += @'
+CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
+{
+    setMinimumSize(400, 225);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setStyleSheet("background:#111;");
+    setMouseTracking(true);
+}
+
+'@
+    }
+    if ($text.IndexOf("void CanvasPreview::set_title(std::shared_ptr<Title> t)", [StringComparison]::Ordinal) -lt 0) {
+        Write-Host "Restoring missing CanvasPreview::set_title definition in $File"
+        $canvasDefinitions += @'
+void CanvasPreview::set_title(std::shared_ptr<Title> t)
+{
+    title_ = t; dirty_ = true; update();
+}
+
+'@
+    }
+    if (-not [string]::IsNullOrEmpty($canvasDefinitions)) {
+        $text = Insert-BeforeMarker -Text $text -Marker "void CanvasPreview::set_playhead(double t)" -Insertion $canvasDefinitions.TrimEnd()
+        $changed = $true
+    }
+
+    if ($changed) {
+        Set-Content -Path $File -Value $text -NoNewline
+    }
+}
+
 function Repair-KnownMergeArtifacts {
     param([string]$ScriptRoot)
     $dock = Join-Path $ScriptRoot "src\title-dock.cpp"
@@ -109,6 +175,7 @@ function Repair-KnownMergeArtifacts {
         "QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const",
         "QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const"
     )
+    Ensure-TitleEditorCoreDefinitions -File $editor
 }
 
 
