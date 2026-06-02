@@ -51,6 +51,7 @@ class PropertiesPanel;
 class TitlePropertiesPanel;
 class QKeyEvent;
 class QContextMenuEvent;
+class QAction;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -94,6 +95,10 @@ private:
     void align_selected_layers_horizontal();
     void align_selected_layers_vertical();
     void align_selected_layers(int x_mode, int y_mode);
+    std::shared_ptr<Title> clone_title(const Title &title) const;
+    void push_undo_snapshot();
+    void restore_undo_snapshot(int index);
+    void update_undo_redo_actions();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -118,7 +123,12 @@ private:
     QAction         *act_prev_kf_ = nullptr;
     QAction         *act_next_kf_ = nullptr;
     QAction         *act_safe_guides_ = nullptr;
+    QAction         *act_undo_ = nullptr;
+    QAction         *act_redo_ = nullptr;
     int              alignment_target_ = 2; /* 0=selection, 2=artboard/canvas */
+    std::vector<std::shared_ptr<Title>> undo_stack_;
+    int              undo_index_ = -1;
+    bool             restoring_undo_ = false;
 };
 
 /* ══════════════════════════════════════════════════════════════════

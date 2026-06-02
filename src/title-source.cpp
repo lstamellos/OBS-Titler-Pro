@@ -22,6 +22,9 @@
 #include <QImage>
 #include <QString>
 #include <QPointF>
+#include <QPainter>
+#include <QFont>
+#include <QColor>
 
 #include <memory>
 #include <string>
@@ -165,6 +168,14 @@ static QPointF shadow_offset(const Layer &layer)
 /* ══════════════════════════════════════════════════════════════════
  *  Cairo rendering
  * ══════════════════════════════════════════════════════════════════ */
+static QColor color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xFF,
+                  (argb >> 8) & 0xFF,
+                  argb & 0xFF,
+                  (argb >> 24) & 0xFF);
+}
+
 static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
                                int canvas_w, int canvas_h)
 {
@@ -177,72 +188,58 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     double sy = layer.scale_y.evaluate(t);
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
-    double box_w = eval_box_width(layer, t);
-    double box_h = eval_box_height(layer, t);
+    double box_w = std::max(1.0, eval_box_width(layer, t));
+    double box_h = std::max(1.0, eval_box_height(layer, t));
+
+    int img_w = std::max(1, (int)std::ceil(box_w));
+    int img_h = std::max(1, (int)std::ceil(box_h));
+    QImage text_image(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
+    text_image.fill(Qt::transparent);
+
+    QPainter painter(&text_image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    QFont font(QString::fromStdString(layer.font_family));
+    font.setPixelSize(layer.font_size);
+    font.setBold(layer.font_bold);
+    font.setItalic(layer.font_italic);
+    font.setKerning(true);
+    painter.setFont(font);
+
+    QRectF text_rect(0, 0, box_w, box_h);
+    Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
+    if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
+    if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
+    if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
+    if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
+
+    if (layer.shadow_enabled) {
+        QColor shadow = color_from_argb(layer.shadow_color);
+        shadow.setAlphaF(std::clamp((double)shadow.alphaF() * layer.shadow_opacity, 0.0, 1.0));
+        painter.setPen(shadow);
+        painter.drawText(text_rect.translated(shadow_offset(layer)), align, QString::fromStdString(layer.text_content));
+    }
+
+    QColor fill = color_from_argb(eval_text_color(layer, t));
+    fill.setAlphaF(std::clamp((double)fill.alphaF(), 0.0, 1.0));
+    painter.setPen(fill);
+    painter.drawText(text_rect, align, QString::fromStdString(layer.text_content));
+    painter.end();
+
+    cairo_surface_t *text_surface = cairo_image_surface_create_for_data(
+        text_image.bits(), CAIRO_FORMAT_ARGB32,
+        text_image.width(), text_image.height(), text_image.bytesPerLine());
 
     cairo_save(cr);
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-
-    PangoLayout *layout = pango_cairo_create_layout(cr);
-
-    PangoFontDescription *fdesc =
-        pango_font_description_from_string(layer.font_family.c_str());
-    pango_font_description_set_size(fdesc,
-        layer.font_size * PANGO_SCALE);
-    if (layer.font_bold)
-        pango_font_description_set_weight(fdesc, PANGO_WEIGHT_BOLD);
-    if (layer.font_italic)
-        pango_font_description_set_style(fdesc, PANGO_STYLE_ITALIC);
-    pango_layout_set_font_description(layout, fdesc);
-    pango_font_description_free(fdesc);
-
-    pango_layout_set_text(layout, layer.text_content.c_str(), -1);
-    pango_layout_set_width(layout, (int)(box_w * PANGO_SCALE));
-
-    PangoAlignment palign = PANGO_ALIGN_CENTER;
-    if (layer.align_h == 0) palign = PANGO_ALIGN_LEFT;
-    if (layer.align_h == 2) palign = PANGO_ALIGN_RIGHT;
-    pango_layout_set_alignment(layout, palign);
-
-    int pw, ph;
-    pango_layout_get_pixel_size(layout, &pw, &ph);
-    (void)pw;
-
-    double text_x = -eval_origin_x(layer, t) * box_w;
-    double text_y = -eval_origin_y(layer, t) * box_h;
-    if (layer.align_v == 1) text_y += (box_h - ph) / 2.0;
-    if (layer.align_v == 2) text_y += box_h - ph;
-    cairo_translate(cr, text_x, text_y);
-
-    if (layer.shadow_enabled) {
-        double sr, sg, sb, sa;
-        unpack_color(layer.shadow_color, sr, sg, sb, sa);
-        QPointF off = shadow_offset(layer);
-        cairo_save(cr);
-        cairo_translate(cr, off.x(), off.y());
-        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * layer.shadow_opacity);
-        pango_cairo_show_layout(cr, layout);
-        cairo_restore(cr);
-    }
-
-    if (layer.stroke_width > 0.01f) {
-        double sr, sg, sb, sa;
-        unpack_color(layer.stroke_color, sr, sg, sb, sa);
-        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha);
-        cairo_set_line_width(cr, layer.stroke_width * 2.0);
-        pango_cairo_layout_path(cr, layout);
-        cairo_stroke(cr);
-    }
-
-    double fr, fg, fb, fa;
-    unpack_color(eval_text_color(layer, t), fr, fg, fb, fa);
-    cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
-    pango_cairo_show_layout(cr, layout);
-
-    g_object_unref(layout);
+    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w, -eval_origin_y(layer, t) * box_h);
+    cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
+
+    cairo_surface_destroy(text_surface);
 }
 
 static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)

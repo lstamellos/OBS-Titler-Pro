@@ -38,6 +38,7 @@
 #include <QFrame>
 #include <QSignalBlocker>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QAbstractSpinBox>
 #include <QAbstractItemModel>
 #include <QTextEdit>
@@ -581,9 +582,7 @@ void TitleEditor::build_ui()
                 title_->add_layer(l);
                 layers_->refresh();
                 on_layer_selected(l->id);
-                canvas_->refresh_preview();
-                TitleDataStore::instance().notify_change();
-                TitleDataStore::instance().save();
+                on_title_modified();
             });
 
     connect(layers_, &LayerStack::delete_layer_requested,
@@ -598,9 +597,7 @@ void TitleEditor::build_ui()
                 else
                     props_->set_layer(nullptr, playhead_);
 
-                canvas_->refresh_preview();
-                TitleDataStore::instance().notify_change();
-                TitleDataStore::instance().save();
+                on_title_modified();
             });
 
     connect(layers_, &LayerStack::layer_visibility_changed,
@@ -608,9 +605,7 @@ void TitleEditor::build_ui()
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
                     layer->visible = visible;
-                    canvas_->refresh_preview();
-                    TitleDataStore::instance().notify_change();
-                    TitleDataStore::instance().save();
+                    on_title_modified();
                 }
             });
 
@@ -619,9 +614,7 @@ void TitleEditor::build_ui()
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
                     layer->locked = locked;
-                    canvas_->refresh_preview();
-                    TitleDataStore::instance().notify_change();
-                    TitleDataStore::instance().save();
+                    on_title_modified();
                 }
             });
 
@@ -632,8 +625,7 @@ void TitleEditor::build_ui()
                     layer->properties_expanded = expanded;
                     layers_->refresh();
                     timeline_->set_title(title_);
-                    TitleDataStore::instance().notify_change();
-                    TitleDataStore::instance().save();
+                    on_title_modified();
                 }
             });
 
@@ -642,8 +634,7 @@ void TitleEditor::build_ui()
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
                     layer->parent_id = parent_id;
-                    TitleDataStore::instance().notify_change();
-                    TitleDataStore::instance().save();
+                    on_title_modified();
                 }
             });
 
@@ -667,8 +658,7 @@ void TitleEditor::build_ui()
                 layers_->refresh();
                 canvas_->refresh_preview();
                 timeline_->set_title(title_);
-                TitleDataStore::instance().notify_change();
-                TitleDataStore::instance().save();
+                on_title_modified();
             });
 
     connect(canvas_, &CanvasPreview::layer_clicked,
@@ -883,6 +873,23 @@ void TitleEditor::build_toolbar()
     });
 
     toolbar_->addSeparator();
+    act_undo_ = toolbar_->addAction("↶");
+    act_undo_->setToolTip("Undo");
+    act_undo_->setShortcut(QKeySequence::Undo);
+    connect(act_undo_, &QAction::triggered, this, [this]() {
+        if (undo_index_ > 0) restore_undo_snapshot(undo_index_ - 1);
+    });
+    act_redo_ = toolbar_->addAction("↷");
+    act_redo_->setToolTip("Redo");
+    act_redo_->setShortcut(QKeySequence::Redo);
+    connect(act_redo_, &QAction::triggered, this, [this]() {
+        if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
+    });
+    addAction(act_undo_);
+    addAction(act_redo_);
+    update_undo_redo_actions();
+
+    toolbar_->addSeparator();
 
     /* Save button */
     auto *btn_save = new QPushButton("Save", toolbar_);
@@ -923,7 +930,83 @@ void TitleEditor::open_title(const std::string &tid)
     else
         props_->set_layer(nullptr, playhead_);
 
+    undo_stack_.clear();
+    undo_index_ = -1;
+    push_undo_snapshot();
+    update_undo_redo_actions();
+
     on_playhead_changed(0.0);
+}
+
+std::shared_ptr<Title> TitleEditor::clone_title(const Title &title) const
+{
+    auto clone = std::make_shared<Title>(title);
+    clone->layers.clear();
+    clone->layers.reserve(title.layers.size());
+    for (const auto &layer : title.layers) {
+        if (layer) clone->layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    return clone;
+}
+
+void TitleEditor::push_undo_snapshot()
+{
+    if (!title_ || restoring_undo_) return;
+    if (undo_index_ + 1 < (int)undo_stack_.size())
+        undo_stack_.erase(undo_stack_.begin() + undo_index_ + 1, undo_stack_.end());
+    undo_stack_.push_back(clone_title(*title_));
+    if (undo_stack_.size() > 30)
+        undo_stack_.erase(undo_stack_.begin());
+    undo_index_ = (int)undo_stack_.size() - 1;
+    update_undo_redo_actions();
+}
+
+void TitleEditor::restore_undo_snapshot(int index)
+{
+    if (!title_ || index < 0 || index >= (int)undo_stack_.size()) return;
+    restoring_undo_ = true;
+    auto snapshot = undo_stack_[(size_t)index];
+    title_->name = snapshot->name;
+    title_->duration = snapshot->duration;
+    title_->loop_start = snapshot->loop_start;
+    title_->loop_end = snapshot->loop_end;
+    title_->bg_color = snapshot->bg_color;
+    title_->width = snapshot->width;
+    title_->height = snapshot->height;
+    title_->live_text_rows = snapshot->live_text_rows;
+    title_->current_cue_row = snapshot->current_cue_row;
+    title_->pending_cue_row = snapshot->pending_cue_row;
+    title_->cue_revision = snapshot->cue_revision;
+    title_->layers.clear();
+    title_->layers.reserve(snapshot->layers.size());
+    for (const auto &layer : snapshot->layers) {
+        if (layer) title_->layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    undo_index_ = index;
+    if (!sel_layer_id_.empty() && !title_->find_layer(sel_layer_id_))
+        sel_layer_id_.clear();
+    if (sel_layer_id_.empty() && !title_->layers.empty())
+        sel_layer_id_ = title_->layers.back()->id;
+    update_title_bar();
+    canvas_->set_title(title_);
+    layers_->set_title(title_);
+    timeline_->set_title(title_);
+    props_->set_title(title_);
+    title_props_->set_title(title_);
+    if (!sel_layer_id_.empty()) on_layer_selected(sel_layer_id_);
+    else props_->set_layer(nullptr, playhead_);
+    on_playhead_changed(std::clamp(playhead_, 0.0, title_->duration));
+    TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
+    restoring_undo_ = false;
+    update_undo_redo_actions();
+    setWindowTitle("OBS Titler Pro Editor  ·  modified");
+}
+
+void TitleEditor::update_undo_redo_actions()
+{
+    if (act_undo_) act_undo_->setEnabled(undo_index_ > 0);
+    if (act_redo_) act_redo_->setEnabled(undo_index_ >= 0 && undo_index_ + 1 < (int)undo_stack_.size());
 }
 
 void TitleEditor::update_title_bar()
@@ -1019,6 +1102,16 @@ void TitleEditor::tick()
 
 void TitleEditor::keyPressEvent(QKeyEvent *ev)
 {
+    if (ev->matches(QKeySequence::Undo)) {
+        if (undo_index_ > 0) restore_undo_snapshot(undo_index_ - 1);
+        ev->accept();
+        return;
+    }
+    if (ev->matches(QKeySequence::Redo)) {
+        if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
+        ev->accept();
+        return;
+    }
     if (ev->key() == Qt::Key_Space && !ev->isAutoRepeat()) {
         QWidget *fw = focusWidget();
         bool editing_text = qobject_cast<QLineEdit *>(fw) ||
@@ -1068,6 +1161,7 @@ void TitleEditor::on_title_modified()
     if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
     canvas_->refresh_preview();
     if (timeline_) timeline_->set_title(title_);
+    push_undo_snapshot();
     TitleDataStore::instance().notify_change();
     TitleDataStore::instance().save();
 }
