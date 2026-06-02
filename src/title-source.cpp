@@ -461,13 +461,18 @@ static void source_video_tick(void *priv, float seconds)
                                                     std::max(0.001, loop_end - loop_start));
         } else if (data->cue_phase == TitleSourceData::CuePhase::OutroThenIntro &&
                    data->playhead >= title->duration) {
+            double next_intro_time = std::max(0.0, data->playhead - title->duration);
             if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
                 apply_live_text_row(title, title->pending_cue_row);
                 title->current_cue_row = title->pending_cue_row;
                 title->pending_cue_row = -1;
                 TitleDataStore::instance().notify_change();
             }
-            data->playhead = 0.0;
+            if (loop_end > loop_start && next_intro_time >= loop_end) {
+                next_intro_time = loop_start + std::fmod(next_intro_time - loop_start,
+                                                         std::max(0.001, loop_end - loop_start));
+            }
+            data->playhead = std::clamp(next_intro_time, 0.0, title->duration);
             data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
         } else if (data->playhead >= title->duration) {
             if (data->loop) {
