@@ -1058,10 +1058,7 @@ void TitleEditor::on_playhead_changed(double t)
 
 void TitleEditor::on_title_modified()
 {
-    if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
-    canvas_->refresh_preview();
-    if (title_props_) title_props_->set_title(title_);
-    if (timeline_) timeline_->set_title(title_);
+    canvas_->update();
     push_undo_snapshot();
     TitleDataStore::instance().notify_change();
     TitleDataStore::instance().save();
@@ -1818,6 +1815,40 @@ void LayerStack::set_selected_layer(const std::string &layer_id)
             return;
         }
     }
+}
+
+void LayerStack::set_layer_clipboard_available(bool available)
+{
+    can_paste_layer_ = available;
+}
+
+void LayerStack::show_context_menu(const QPoint &pos)
+{
+    if (!list_) return;
+    QListWidgetItem *item = list_->itemAt(pos);
+    if (item) list_->setCurrentItem(item);
+
+    std::string id = selected_id();
+    bool has_layer = !id.empty() && title_ && title_->find_layer(id) != nullptr;
+
+    QMenu menu(this);
+    QAction *clone_action = menu.addAction("Clone Layer");
+    QAction *copy_action = menu.addAction("Copy Layer");
+    QAction *paste_action = menu.addAction("Paste Layer");
+    menu.addSeparator();
+    QAction *delete_action = menu.addAction("Delete Layer");
+
+    clone_action->setEnabled(has_layer);
+    copy_action->setEnabled(has_layer);
+    paste_action->setEnabled(can_paste_layer_);
+    delete_action->setEnabled(has_layer);
+
+    QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == clone_action) emit clone_layer_requested(id);
+    else if (chosen == copy_action) emit copy_layer_requested(id);
+    else if (chosen == paste_action) emit paste_layer_requested();
+    else if (chosen == delete_action) emit delete_layer_requested(id);
 }
 
 void LayerStack::set_layer_clipboard_available(bool available)
@@ -2724,6 +2755,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     btn_text_color_ = new QPushButton(inner);
 
+    cmb_text_style_ = new QComboBox(inner);
+    cmb_text_style_->addItem("Normal", 0);
+    cmb_text_style_->addItem("All caps", 1);
+    cmb_text_style_->addItem("Small caps", 2);
+    cmb_text_style_->addItem("Superscript", 3);
+    cmb_text_style_->addItem("Subscript", 4);
+    cmb_text_style_->setStyleSheet(cmb_font_->styleSheet());
+
+    btn_text_color_ = new QPushButton(inner);
+
     txfl->addRow("Text:",   txt_content_);
     txfl->addRow("Font:",   cmb_font_);
     txfl->addRow("Size:",   spn_size_);
@@ -2860,14 +2901,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (!layer_ || !begin_change()) return;
                 layer_->outline_join = (OutlineJoinStyle)cmb_outline_join_->itemData(idx).toInt();
                 emit_change();
-            });
-    connect(edit_image_path_, &QLineEdit::textChanged,
-            this, [this, can_edit, emit_change](const QString &path){
-                if (can_edit()) { layer_->image_path = path.toStdString(); emit_change(); }
-            });
-    connect(chk_lock_aspect_, &QCheckBox::toggled,
-            this, [this, can_edit, emit_change](bool v){
-                if (can_edit()) { layer_->lock_aspect_ratio = v; emit_change(); }
             });
     connect(btn_pick_image_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {

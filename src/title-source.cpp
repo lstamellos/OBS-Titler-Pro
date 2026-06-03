@@ -29,6 +29,9 @@
 #include <QString>
 #include <QLocale>
 
+#include <QString>
+#include <QLocale>
+
 #include <memory>
 #include <string>
 #include <cstring>
