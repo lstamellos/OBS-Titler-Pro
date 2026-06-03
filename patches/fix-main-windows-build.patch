@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 3 Jun 2026 00:00:00 +0000
+Subject: [PATCH] Fix Title Editor Windows build regressions on main
+
+The main branch currently contains a merge of the outline/context-menu work
+with newer timeline/toolbar code.  That merge left a few declarations and
+small helper functions behind, which causes MSVC to fail before it can compile
+Title Editor.
+
+Apply this patch on top of main (019a94f or later).  It intentionally only
+adds missing declarations/includes/helpers and removes the duplicate
+PropertiesPanel member; it does not change behavior.
+---
+ src/title-editor.cpp | 58 +++++++++++++++++++++++++++++++++++++++++++++
+ src/title-editor.h   | 23 ++++++++++++++++--
+ 2 files changed, 79 insertions(+), 2 deletions(-)
+
+diff --git a/src/title-editor.h b/src/title-editor.h
+index 0000000..0000000 100644
+--- a/src/title-editor.h
++++ b/src/title-editor.h
+@@ -22,6 +22,7 @@
+ #include <QCheckBox>
+ #include <QPushButton>
+ #include <QGroupBox>
++#include <QElapsedTimer>
+ #include <QFormLayout>
+ #include <QTimer>
+ #include <QPoint>
+@@ -61,6 +62,8 @@ public slots:
+     void play_full_loop();
+     void rewind();
+     void step_forward();
++    void previous_keyframe();
++    void next_keyframe();
+ 
+     /* Called by sub-widgets */
+     void on_layer_selected(const std::string &layer_id);
+@@ -78,6 +82,11 @@ private:
+     void redo();
+     void update_undo_actions();
+     void restore_title_snapshot(const Title &snapshot);
++    void update_undo_redo_actions();
++    void align_selected_to_canvas(int x_mode, int y_mode);
++    void align_selected_layers_horizontal();
++    void align_selected_layers_vertical();
++    void align_selected_layers(int x_mode, int y_mode);
+ 
+     /* Current editing state */
+     std::shared_ptr<Title> title_;
+@@ -103,9 +111,13 @@ private:
+     QAction         *act_play_  = nullptr;
+     QAction         *act_full_loop_ = nullptr;
+     QAction         *act_rew_   = nullptr;
++    QAction         *act_prev_kf_ = nullptr;
++    QAction         *act_next_kf_ = nullptr;
++    QAction         *act_safe_guides_ = nullptr;
+     QAction         *act_undo_  = nullptr;
+     QAction         *act_redo_  = nullptr;
+     std::shared_ptr<Layer> copied_layer_;
++    int alignment_target_ = 2; /* 0=selection, 2=artboard/canvas */
+     std::vector<std::shared_ptr<Title>> undo_stack_;
+     int undo_index_ = -1;
+     bool restoring_undo_ = false;
+@@ -343,6 +355,5 @@ private:
+     QComboBox       *cmb_text_style_ = nullptr;
+     QPushButton     *btn_text_color_ = nullptr;
+-    QGroupBox       *text_box_ = nullptr;
+     QGroupBox       *outline_box_ = nullptr;
+     QCheckBox       *chk_outline_enabled_ = nullptr;
+     QPushButton     *btn_outline_color_ = nullptr;
+diff --git a/src/title-editor.cpp b/src/title-editor.cpp
+index 0000000..0000000 100644
+--- a/src/title-editor.cpp
++++ b/src/title-editor.cpp
+@@ -25,6 +25,7 @@
+ #include <QStyle>
+ #include <QStyleFactory>
+ #include <QTextOption>
++#include <QToolButton>
+ #include <QWheelEvent>
+ #include <QPainterPath>
+ #include <QLocale>
+@@ -210,4 +211,70 @@ static void draw_text_outline(QPainter &p, const QRectF &rect, int flags,
+     p.restore();
+ }
++
++static double obs_frame_duration()
++{
++    obs_video_info ovi = {};
++    if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0)
++        return static_cast<double>(ovi.fps_den) / static_cast<double>(ovi.fps_num);
++    return 1.0 / 60.0;
++}
++
++static double snap_to_obs_frame(double seconds)
++{
++    const double step = obs_frame_duration();
++    if (step <= 0.0)
++        return seconds;
++    return std::round(seconds / step) * step;
++}
++
++static double eval_box_width(const Layer &layer, double local_time)
++{
++    if (layer.box_width.is_animated())
++        return layer.box_width.evaluate(local_time);
++    return layer.rect_width;
++}
++
++static double eval_box_height(const Layer &layer, double local_time)
++{
++    if (layer.box_height.is_animated())
++        return layer.box_height.evaluate(local_time);
++    return layer.rect_height;
++}
++
++static void set_animated_value(AnimatedProperty &prop, double local_time, double value)
++{
++    if (!prop.is_animated()) {
++        prop.static_value = value;
++        return;
++    }
++    auto it = std::min_element(prop.keyframes.begin(), prop.keyframes.end(),
++                               [local_time](const Keyframe &a, const Keyframe &b) {
++                                   return std::abs(a.time - local_time) < std::abs(b.time - local_time);
++                               });
++    if (it != prop.keyframes.end() && std::abs(it->time - local_time) <= obs_frame_duration() * 0.5) {
++        it->value = value;
++    } else {
++        Keyframe kf;
++        kf.time = local_time;
++        kf.value = value;
++        prop.keyframes.push_back(kf);
++        std::sort(prop.keyframes.begin(), prop.keyframes.end(), [](const Keyframe &a, const Keyframe &b) {
++            return a.time < b.time;
++        });
++    }
++}
++
++static void set_channel_statics(Layer &layer, bool text_channels, uint32_t argb)
++{
++    AnimatedProperty &a = text_channels ? layer.text_color_a : layer.fill_color_a;
++    AnimatedProperty &r = text_channels ? layer.text_color_r : layer.fill_color_r;
++    AnimatedProperty &g = text_channels ? layer.text_color_g : layer.fill_color_g;
++    AnimatedProperty &b = text_channels ? layer.text_color_b : layer.fill_color_b;
++    a.static_value = static_cast<double>((argb >> 24) & 0xff);
++    r.static_value = static_cast<double>((argb >> 16) & 0xff);
++    g.static_value = static_cast<double>((argb >> 8) & 0xff);
++    b.static_value = static_cast<double>(argb & 0xff);
++}
++
+ /* ══════════════════════════════════════════════════════════════════
+  *  TitleEditor

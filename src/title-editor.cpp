@@ -11,6 +11,8 @@
 #include <obs-module.h>
 
 #include <QPainter>
+#include <QPainterPath>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QVBoxLayout>
@@ -31,8 +33,10 @@
 #include <QFontDatabase>
 #include <QScrollArea>
 #include <QFrame>
+#include <QMenu>
 #include <cmath>
 #include <algorithm>
+#include <iterator>
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Dark AE-style palette constants                                   */
@@ -45,6 +49,101 @@ static const QColor C_TEXT     { 0xcccccc };
 static const QColor C_RULER    { 0x1e1e1e };
 static const QColor C_KF_DOT   { 0xf0a020 };
 static const QColor C_PLAYHEAD { 0xff4444 };
+
+
+static QColor color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xff,
+                  (argb >> 8) & 0xff,
+                  argb & 0xff,
+                  (argb >> 24) & 0xff);
+}
+
+static uint32_t argb_from_color(const QColor &color)
+{
+    return ((uint32_t)color.alpha() << 24) |
+           ((uint32_t)color.red() << 16) |
+           ((uint32_t)color.green() << 8) |
+           (uint32_t)color.blue();
+}
+
+static QString locale_uppercase_visual(QString text)
+{
+    const QLocale locale = QLocale::system();
+    if (locale.language() == QLocale::Turkish) {
+        text.replace(QStringLiteral("i"), QStringLiteral("İ"));
+        text.replace(QStringLiteral("ı"), QStringLiteral("I"));
+    }
+    text.replace(QStringLiteral("ß"), QStringLiteral("SS"));
+    QString upper = text.toUpper();
+    upper.replace(QStringLiteral("Ά"), QStringLiteral("Α"));
+    upper.replace(QStringLiteral("Έ"), QStringLiteral("Ε"));
+    upper.replace(QStringLiteral("Ή"), QStringLiteral("Η"));
+    upper.replace(QStringLiteral("Ί"), QStringLiteral("Ι"));
+    upper.replace(QStringLiteral("Ό"), QStringLiteral("Ο"));
+    upper.replace(QStringLiteral("Ύ"), QStringLiteral("Υ"));
+    upper.replace(QStringLiteral("Ώ"), QStringLiteral("Ω"));
+    upper.replace(QStringLiteral("ΐ"), QStringLiteral("Ϊ"));
+    upper.replace(QStringLiteral("ΰ"), QStringLiteral("Ϋ"));
+    upper.replace(QStringLiteral("ẞ"), QStringLiteral("SS"));
+    return upper;
+}
+
+static QString styled_text_for_layer(const Layer &layer)
+{
+    QString text = QString::fromStdString(layer.text_content);
+    return layer.text_all_caps ? locale_uppercase_visual(text) : text;
+}
+
+static void apply_text_style_to_font(QFont &font, const Layer &layer)
+{
+    font.setBold(layer.font_bold);
+    font.setItalic(layer.font_italic);
+    font.setCapitalization(layer.text_small_caps ? QFont::SmallCaps : QFont::MixedCase);
+    if (layer.text_superscript || layer.text_subscript)
+        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
+}
+
+static QRectF baseline_adjusted_rect(QRectF rect, const Layer &layer)
+{
+    if (layer.text_superscript)
+        rect.translate(0.0, -rect.height() * 0.18);
+    else if (layer.text_subscript)
+        rect.translate(0.0, rect.height() * 0.18);
+    return rect;
+}
+
+static Qt::PenJoinStyle outline_join_to_qt(OutlineJoinStyle join)
+{
+    switch (join) {
+    case OutlineJoinStyle::Miter: return Qt::MiterJoin;
+    case OutlineJoinStyle::Bevel: return Qt::BevelJoin;
+    case OutlineJoinStyle::Round:
+    default: return Qt::RoundJoin;
+    }
+}
+
+static void draw_text_outline(QPainter &p, const QRectF &rect, int flags,
+                              const QString &text, const Layer &layer)
+{
+    QColor stroke = color_from_argb(layer.outline_color);
+    stroke.setAlphaF(std::clamp(stroke.alphaF() * (double)layer.outline_opacity, 0.0, 1.0));
+    if (!layer.outline_enabled || layer.outline_thickness <= 0.0f || stroke.alpha() == 0) return;
+
+    QFontMetricsF fm(p.font());
+    QRectF bounds = fm.boundingRect(rect, flags, text);
+    QPainterPath path;
+    path.addText(QPointF(bounds.left(), bounds.top() + fm.ascent()), p.font(), text);
+
+    QPen pen(stroke, layer.outline_thickness, Qt::SolidLine, Qt::SquareCap,
+             outline_join_to_qt(layer.outline_join));
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(pen);
+    p.drawPath(path);
+    p.restore();
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor
@@ -147,6 +246,61 @@ void TitleEditor::build_ui()
                 l->out_time = title_->duration;
                 title_->add_layer(l);
                 layers_->refresh();
+                push_undo_snapshot();
+                TitleDataStore::instance().notify_change();
+            });
+
+    auto duplicate_layer = [](const Layer &source) {
+        auto copy = std::make_shared<Layer>(source);
+        copy->id = TitleDataStore::make_uuid();
+        copy->name = source.name.empty() ? "Layer copy" : source.name + " copy";
+        copy->pos_x.static_value += 20.0;
+        copy->pos_y.static_value += 20.0;
+        for (auto &kf : copy->pos_x.keyframes) kf.value += 20.0;
+        for (auto &kf : copy->pos_y.keyframes) kf.value += 20.0;
+        return copy;
+    };
+    auto insert_above_layer = [](Title &title, const std::string &source_id,
+                                 std::shared_ptr<Layer> copy) {
+        auto it = std::find_if(title.layers.begin(), title.layers.end(),
+                               [&](const std::shared_ptr<Layer> &layer) {
+                                   return layer && layer->id == source_id;
+                               });
+        if (it == title.layers.end()) title.layers.push_back(copy);
+        else title.layers.insert(std::next(it), copy);
+    };
+
+    connect(layers_, &LayerStack::clone_layer_requested,
+            this, [this, duplicate_layer, insert_above_layer](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                auto clone = duplicate_layer(*source);
+                insert_above_layer(*title_, lid, clone);
+                layers_->refresh();
+                on_layer_selected(clone->id);
+                push_undo_snapshot();
+                TitleDataStore::instance().notify_change();
+            });
+
+    connect(layers_, &LayerStack::copy_layer_requested,
+            this, [this](const std::string &lid) {
+                if (!title_) return;
+                auto source = title_->find_layer(lid);
+                if (!source) return;
+                copied_layer_ = std::make_shared<Layer>(*source);
+                layers_->set_layer_clipboard_available(true);
+            });
+
+    connect(layers_, &LayerStack::paste_layer_requested,
+            this, [this, duplicate_layer]() {
+                if (!title_ || !copied_layer_) return;
+                auto pasted = duplicate_layer(*copied_layer_);
+                title_->add_layer(pasted);
+                layers_->refresh();
+                layers_->set_layer_clipboard_available(true);
+                on_layer_selected(pasted->id);
+                push_undo_snapshot();
                 TitleDataStore::instance().notify_change();
             });
 
@@ -155,7 +309,17 @@ void TitleEditor::build_ui()
                 if (!title_) return;
                 title_->remove_layer(lid);
                 layers_->refresh();
+                push_undo_snapshot();
                 TitleDataStore::instance().notify_change();
+            });
+
+    connect(layers_, &LayerStack::layer_visibility_changed,
+            this, [this](const std::string &lid, bool visible) {
+                if (!title_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer || layer->visible == visible) return;
+                layer->visible = visible;
+                on_title_modified();
             });
 
     connect(timeline_, &TimelineWidget::playhead_changed,
@@ -186,6 +350,13 @@ void TitleEditor::build_toolbar()
 
     connect(act_rew_,  &QAction::triggered, this, &TitleEditor::rewind);
     connect(act_play_, &QAction::triggered, this, &TitleEditor::play_pause);
+
+    toolbar_->addSeparator();
+    act_undo_ = toolbar_->addAction("↶ Undo");
+    act_redo_ = toolbar_->addAction("↷ Redo");
+    connect(act_undo_, &QAction::triggered, this, &TitleEditor::undo);
+    connect(act_redo_, &QAction::triggered, this, &TitleEditor::redo);
+    update_undo_actions();
 
     toolbar_->addSeparator();
 
@@ -240,6 +411,9 @@ void TitleEditor::open_title(const std::string &tid)
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
+    undo_stack_.clear();
+    undo_index_ = -1;
+    push_undo_snapshot();
 
     on_playhead_changed(0.0);
 }
@@ -248,6 +422,75 @@ void TitleEditor::update_title_bar()
 {
     if (title_)
         title_lbl_->setText(QString::fromStdString(title_->name));
+}
+
+static std::shared_ptr<Title> clone_title_for_undo(const Title &source)
+{
+    auto copy = std::make_shared<Title>(source);
+    copy->layers.clear();
+    for (const auto &layer : source.layers) {
+        if (layer) copy->layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    return copy;
+}
+
+void TitleEditor::restore_title_snapshot(const Title &snapshot)
+{
+    if (!title_) return;
+    const std::string keep_id = title_->id;
+    *title_ = snapshot;
+    title_->id = keep_id;
+    layers_->set_title(title_);
+    timeline_->set_title(title_);
+    canvas_->set_title(title_);
+    update_title_bar();
+    if (!sel_layer_id_.empty() && !title_->find_layer(sel_layer_id_))
+        sel_layer_id_.clear();
+    if (!sel_layer_id_.empty()) on_layer_selected(sel_layer_id_);
+    else props_->set_layer(nullptr, playhead_);
+    on_playhead_changed(std::min(playhead_, title_->duration));
+    TitleDataStore::instance().notify_change();
+}
+
+void TitleEditor::push_undo_snapshot()
+{
+    if (!title_ || restoring_undo_) return;
+    if (undo_index_ >= 0 && undo_index_ + 1 < (int)undo_stack_.size())
+        undo_stack_.erase(undo_stack_.begin() + undo_index_ + 1, undo_stack_.end());
+    undo_stack_.push_back(clone_title_for_undo(*title_));
+    undo_index_ = (int)undo_stack_.size() - 1;
+    constexpr int kMaxUndoSnapshots = 100;
+    if ((int)undo_stack_.size() > kMaxUndoSnapshots) {
+        undo_stack_.erase(undo_stack_.begin());
+        --undo_index_;
+    }
+    update_undo_actions();
+}
+
+void TitleEditor::undo()
+{
+    if (!title_ || undo_index_ <= 0) return;
+    restoring_undo_ = true;
+    --undo_index_;
+    restore_title_snapshot(*undo_stack_[undo_index_]);
+    restoring_undo_ = false;
+    update_undo_actions();
+}
+
+void TitleEditor::redo()
+{
+    if (!title_ || undo_index_ + 1 >= (int)undo_stack_.size()) return;
+    restoring_undo_ = true;
+    ++undo_index_;
+    restore_title_snapshot(*undo_stack_[undo_index_]);
+    restoring_undo_ = false;
+    update_undo_actions();
+}
+
+void TitleEditor::update_undo_actions()
+{
+    if (act_undo_) act_undo_->setEnabled(undo_index_ > 0);
+    if (act_redo_) act_redo_->setEnabled(undo_index_ >= 0 && undo_index_ + 1 < (int)undo_stack_.size());
 }
 
 /* ── Transport ───────────────────────────────────────────────────── */
@@ -314,6 +557,7 @@ void TitleEditor::on_playhead_changed(double t)
 void TitleEditor::on_title_modified()
 {
     canvas_->update();
+    push_undo_snapshot();
     TitleDataStore::instance().notify_change();
 }
 
@@ -392,11 +636,19 @@ void CanvasPreview::render_to_pixmap()
             double rw = layer->rect_width;
             double rh = layer->rect_height;
             QRectF r(-rw/2.0, -rh/2.0, rw, rh);
+            QColor oc = color_from_argb(layer->outline_color);
+            oc.setAlphaF(std::clamp(oc.alphaF() * (double)layer->outline_opacity, 0.0, 1.0));
+            QPen outline_pen(Qt::NoPen);
+            if (layer->outline_enabled && layer->outline_thickness > 0.0f && oc.alpha() > 0) {
+                outline_pen = QPen(oc, layer->outline_thickness, Qt::SolidLine, Qt::SquareCap,
+                                   outline_join_to_qt(layer->outline_join));
+            }
+            p.setBrush(fc);
+            p.setPen(outline_pen);
             if (layer->corner_radius > 0)
-                p.setBrush(fc), p.setPen(Qt::NoPen),
                 p.drawRoundedRect(r, layer->corner_radius, layer->corner_radius);
             else
-                p.fillRect(r, fc);
+                p.drawRect(r);
         }
 
         if (layer->type == LayerType::Text) {
@@ -406,10 +658,8 @@ void CanvasPreview::render_to_pixmap()
                        (layer->text_color >> 24) & 0xFF );
             QFont f(QString::fromStdString(layer->font_family));
             f.setPixelSize(layer->font_size);
-            f.setBold(layer->font_bold);
-            f.setItalic(layer->font_italic);
+            apply_text_style_to_font(f, *layer);
             p.setFont(f);
-            p.setPen(tc);
             Qt::AlignmentFlag ha = Qt::AlignHCenter;
             if (layer->align_h == 0) ha = Qt::AlignLeft;
             if (layer->align_h == 2) ha = Qt::AlignRight;
@@ -419,8 +669,11 @@ void CanvasPreview::render_to_pixmap()
             /* Draw centred on origin */
             QRectF tr(-title_->width/2.0, -title_->height/2.0,
                        title_->width, title_->height);
-            p.drawText(tr, ha | va,
-                       QString::fromStdString(layer->text_content));
+            tr = baseline_adjusted_rect(tr, *layer);
+            QString display_text = styled_text_for_layer(*layer);
+            draw_text_outline(p, tr, ha | va, display_text, *layer);
+            p.setPen(tc);
+            p.drawText(tr, ha | va, display_text);
         }
 
         /* Selection box */
@@ -537,11 +790,14 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
         "QListWidget::item{padding:3px 4px;border-bottom:1px solid #2a2a2a;}"
         "QListWidget::item:selected{background:#0078d4;color:#fff;}"
         "QListWidget::item:hover{background:#252525;}");
+    list_->setContextMenuPolicy(Qt::CustomContextMenu);
     vl->addWidget(list_, 1);
 
     connect(btn_add_text_, &QPushButton::clicked, this, &LayerStack::on_add_text);
     connect(btn_add_rect_, &QPushButton::clicked, this, &LayerStack::on_add_rect);
     connect(btn_del_,      &QPushButton::clicked, this, &LayerStack::on_delete);
+    connect(list_, &QListWidget::customContextMenuRequested,
+            this, &LayerStack::show_context_menu);
     connect(list_, &QListWidget::itemSelectionChanged,
             this, &LayerStack::on_selection_changed);
 }
@@ -568,6 +824,40 @@ void LayerStack::populate()
         list_->addItem(item);
     }
     list_->blockSignals(false);
+}
+
+void LayerStack::set_layer_clipboard_available(bool available)
+{
+    can_paste_layer_ = available;
+}
+
+void LayerStack::show_context_menu(const QPoint &pos)
+{
+    if (!list_) return;
+    QListWidgetItem *item = list_->itemAt(pos);
+    if (item) list_->setCurrentItem(item);
+
+    std::string id = selected_id();
+    bool has_layer = !id.empty() && title_ && title_->find_layer(id) != nullptr;
+
+    QMenu menu(this);
+    QAction *clone_action = menu.addAction("Clone Layer");
+    QAction *copy_action = menu.addAction("Copy Layer");
+    QAction *paste_action = menu.addAction("Paste Layer");
+    menu.addSeparator();
+    QAction *delete_action = menu.addAction("Delete Layer");
+
+    clone_action->setEnabled(has_layer);
+    copy_action->setEnabled(has_layer);
+    paste_action->setEnabled(can_paste_layer_);
+    delete_action->setEnabled(has_layer);
+
+    QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == clone_action) emit clone_layer_requested(id);
+    else if (chosen == copy_action) emit copy_layer_requested(id);
+    else if (chosen == paste_action) emit paste_layer_requested();
+    else if (chosen == delete_action) emit delete_layer_requested(id);
 }
 
 std::string LayerStack::selected_id() const
@@ -787,7 +1077,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *s = new QDoubleSpinBox(inner);
         s->setRange(lo, hi);
         s->setSingleStep(step);
-        s->setDecimals(1);
+        s->setDecimals(step < 0.1 ? 2 : 1);
         s->setStyleSheet("QDoubleSpinBox{color:#ccc;background:#2a2a2a;border:none;"
                          "border-radius:2px;padding:2px;}");
         return s;
@@ -805,9 +1095,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     vl->addWidget(tform_box);
 
     /* ── Text ── */
-    auto *txt_box = new QGroupBox("Text", inner);
-    txt_box->setStyleSheet(tform_box->styleSheet());
-    auto *txfl = new QFormLayout(txt_box);
+    text_box_ = new QGroupBox("Text", inner);
+    text_box_->setStyleSheet(tform_box->styleSheet());
+    auto *txfl = new QFormLayout(text_box_);
     txfl->setSpacing(3);
 
     txt_content_ = new QLineEdit(inner);
@@ -832,57 +1122,152 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_bold_->setStyleSheet("color:#ccc;");
     chk_italic_->setStyleSheet("color:#ccc;");
 
+    cmb_text_style_ = new QComboBox(inner);
+    cmb_text_style_->addItem("Normal", 0);
+    cmb_text_style_->addItem("All caps", 1);
+    cmb_text_style_->addItem("Small caps", 2);
+    cmb_text_style_->addItem("Superscript", 3);
+    cmb_text_style_->addItem("Subscript", 4);
+    cmb_text_style_->setStyleSheet(cmb_font_->styleSheet());
+
+    btn_text_color_ = new QPushButton(inner);
+
     txfl->addRow("Text:",   txt_content_);
     txfl->addRow("Font:",   cmb_font_);
     txfl->addRow("Size:",   spn_size_);
+    txfl->addRow("Text style:", cmb_text_style_);
     auto *bi_row = new QHBoxLayout();
     bi_row->addWidget(chk_bold_);
     bi_row->addWidget(chk_italic_);
     bi_row->addStretch();
     txfl->addRow("Style:",  bi_row);
-    vl->addWidget(txt_box);
+    txfl->addRow("Color:", btn_text_color_);
+    vl->addWidget(text_box_);
+
+    /* ── Outline ── */
+    outline_box_ = new QGroupBox("Outline", inner);
+    outline_box_->setStyleSheet(tform_box->styleSheet());
+    auto *ofl = new QFormLayout(outline_box_);
+    ofl->setSpacing(3);
+
+    chk_outline_enabled_ = new QCheckBox("Enable outline", inner);
+    chk_outline_enabled_->setStyleSheet("color:#ccc;");
+    btn_outline_color_ = new QPushButton(inner);
+    spn_outline_width_ = mk_dspin(0.0, 100.0, 0.5);
+    spn_outline_width_->setToolTip("Outline thickness in pixels; set to 0 to disable.");
+    spn_outline_opacity_ = mk_dspin(0.0, 1.0, 0.01);
+    cmb_outline_join_ = new QComboBox(inner);
+    cmb_outline_join_->addItem("Miter", (int)OutlineJoinStyle::Miter);
+    cmb_outline_join_->addItem("Round", (int)OutlineJoinStyle::Round);
+    cmb_outline_join_->addItem("Bevel", (int)OutlineJoinStyle::Bevel);
+    cmb_outline_join_->setStyleSheet(cmb_font_->styleSheet());
+
+    ofl->addRow("", chk_outline_enabled_);
+    ofl->addRow("Color:", btn_outline_color_);
+    ofl->addRow("Thickness:", spn_outline_width_);
+    ofl->addRow("Opacity:", spn_outline_opacity_);
+    ofl->addRow("Join:", cmb_outline_join_);
+    vl->addWidget(outline_box_);
 
     vl->addStretch();
     setWidget(inner);
 
     /* ── Connect signals → property_changed ── */
+    auto begin_change = [this]() -> bool {
+        if (loading_) return false;
+        emit property_change_about_to_begin();
+        return true;
+    };
     auto emit_change = [this]() { emit property_changed(); };
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->pos_x.static_value = v; emit_change(); }
+            this, [this, begin_change, emit_change](double v){
+                if (layer_ && begin_change()) { layer_->pos_x.static_value = v; emit_change(); }
             });
     connect(spn_py_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->pos_y.static_value = v; emit_change(); }
+            this, [this, begin_change, emit_change](double v){
+                if (layer_ && begin_change()) { layer_->pos_y.static_value = v; emit_change(); }
             });
     connect(spn_rot_,      QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->rotation.static_value = v; emit_change(); }
+            this, [this, begin_change, emit_change](double v){
+                if (layer_ && begin_change()) { layer_->rotation.static_value = v; emit_change(); }
             });
     connect(spn_opacity_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, emit_change](double v){
-                if (layer_) { layer_->opacity.static_value = v; emit_change(); }
+            this, [this, begin_change, emit_change](double v){
+                if (layer_ && begin_change()) { layer_->opacity.static_value = v; emit_change(); }
             });
     connect(txt_content_, &QLineEdit::textChanged,
-            this, [this, emit_change](const QString &s){
-                if (layer_) { layer_->text_content = s.toStdString(); emit_change(); }
+            this, [this, begin_change, emit_change](const QString &s){
+                if (layer_ && begin_change()) { layer_->text_content = s.toStdString(); emit_change(); }
             });
     connect(cmb_font_, &QComboBox::currentTextChanged,
-            this, [this, emit_change](const QString &s){
-                if (layer_) { layer_->font_family = s.toStdString(); emit_change(); }
+            this, [this, begin_change, emit_change](const QString &s){
+                if (layer_ && begin_change()) { layer_->font_family = s.toStdString(); emit_change(); }
             });
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this, emit_change](int v){
-                if (layer_) { layer_->font_size = v; emit_change(); }
+            this, [this, begin_change, emit_change](int v){
+                if (layer_ && begin_change()) { layer_->font_size = v; emit_change(); }
             });
     connect(chk_bold_, &QCheckBox::toggled,
-            this, [this, emit_change](bool v){
-                if (layer_) { layer_->font_bold = v; emit_change(); }
+            this, [this, begin_change, emit_change](bool v){
+                if (layer_ && begin_change()) { layer_->font_bold = v; emit_change(); }
             });
     connect(chk_italic_, &QCheckBox::toggled,
-            this, [this, emit_change](bool v){
-                if (layer_) { layer_->font_italic = v; emit_change(); }
+            this, [this, begin_change, emit_change](bool v){
+                if (layer_ && begin_change()) { layer_->font_italic = v; emit_change(); }
+            });
+    connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, begin_change, emit_change](int idx){
+                if (!layer_ || !begin_change()) return;
+                int style = cmb_text_style_->itemData(idx).toInt();
+                layer_->text_all_caps = style == 1;
+                layer_->text_small_caps = style == 2;
+                layer_->text_superscript = style == 3;
+                layer_->text_subscript = style == 4;
+                emit_change();
+            });
+    connect(btn_text_color_, &QPushButton::clicked,
+            this, [this, begin_change, emit_change]() {
+                if (!layer_) return;
+                QColor picked = QColorDialog::getColor(color_from_argb(layer_->text_color), this,
+                                                        "Text Color", QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid() || !begin_change()) return;
+                layer_->text_color = argb_from_color(picked);
+                emit_change();
+                load_values();
+            });
+    connect(chk_outline_enabled_, &QCheckBox::toggled,
+            this, [this, begin_change, emit_change](bool v){
+                if (layer_ && begin_change()) { layer_->outline_enabled = v; emit_change(); }
+            });
+    connect(btn_outline_color_, &QPushButton::clicked,
+            this, [this, begin_change, emit_change]() {
+                if (!layer_) return;
+                QColor picked = QColorDialog::getColor(color_from_argb(layer_->outline_color), this,
+                                                        "Outline Color", QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid() || !begin_change()) return;
+                layer_->outline_color = argb_from_color(picked);
+                layer_->stroke_color = layer_->outline_color;
+                emit_change();
+                load_values();
+            });
+    connect(spn_outline_width_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, begin_change, emit_change](double v){
+                if (layer_ && begin_change()) {
+                    layer_->outline_thickness = (float)v;
+                    layer_->stroke_width = (float)v;
+                    emit_change();
+                }
+            });
+    connect(spn_outline_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, begin_change, emit_change](double v){
+                if (layer_ && begin_change()) { layer_->outline_opacity = (float)v; emit_change(); }
+            });
+    connect(cmb_outline_join_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, begin_change, emit_change](int idx){
+                if (!layer_ || !begin_change()) return;
+                layer_->outline_join = (OutlineJoinStyle)cmb_outline_join_->itemData(idx).toInt();
+                emit_change();
             });
 }
 
@@ -901,7 +1286,9 @@ void PropertiesPanel::set_layer(std::shared_ptr<Layer> layer, double t)
 void PropertiesPanel::load_values()
 {
     if (!layer_) return;
-    bool blocked = blockSignals(true);
+    loading_ = true;
+    text_box_->setVisible(layer_->type == LayerType::Text);
+    outline_box_->setVisible(layer_->type == LayerType::Text || layer_->type == LayerType::SolidRect || layer_->type == LayerType::Shape);
 
     spn_px_->setValue(layer_->pos_x.is_animated()
                       ? layer_->pos_x.evaluate(playhead_)
@@ -922,6 +1309,23 @@ void PropertiesPanel::load_values()
     spn_size_->setValue(layer_->font_size);
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
+    int text_style = layer_->text_all_caps ? 1 : (layer_->text_small_caps ? 2 :
+                     (layer_->text_superscript ? 3 : (layer_->text_subscript ? 4 : 0)));
+    int style_idx = cmb_text_style_->findData(text_style);
+    cmb_text_style_->setCurrentIndex(style_idx >= 0 ? style_idx : 0);
+    auto style_color_button = [](QPushButton *button, uint32_t argb) {
+        QColor c = color_from_argb(argb);
+        button->setText(c.alpha() == 0 ? "Transparent" : c.name(QColor::HexArgb));
+        button->setStyleSheet(QString("QPushButton{color:#fff;background:%1;border:1px solid #555;border-radius:2px;padding:2px;}")
+                              .arg(c.alpha() == 0 ? QStringLiteral("#222") : c.name(QColor::HexRgb)));
+    };
+    style_color_button(btn_text_color_, layer_->text_color);
+    style_color_button(btn_outline_color_, layer_->outline_color);
+    chk_outline_enabled_->setChecked(layer_->outline_enabled);
+    spn_outline_width_->setValue(layer_->outline_thickness);
+    spn_outline_opacity_->setValue(layer_->outline_opacity);
+    int join_idx = cmb_outline_join_->findData((int)layer_->outline_join);
+    cmb_outline_join_->setCurrentIndex(join_idx >= 0 ? join_idx : 1);
 
-    blockSignals(blocked);
+    loading_ = false;
 }
