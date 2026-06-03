@@ -8,176 +8,10 @@ param(
     [string]$InstallRoot,
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
-    [switch]$Clean,
-    [switch]$RestoreTrackedSources,
     [switch]$SkipInstall
 )
 
 $ErrorActionPreference = "Stop"
-
-function Find-MatchingBraceIndex {
-    param([string]$Text, [int]$OpenIndex)
-    $depth = 0
-    for ($i = $OpenIndex; $i -lt $Text.Length; $i++) {
-        $ch = $Text[$i]
-        if ($ch -eq '{') { $depth++ }
-        elseif ($ch -eq '}') {
-            $depth--
-            if ($depth -eq 0) { return $i }
-        }
-    }
-    return -1
-}
-
-function Remove-CppDefinitionRange {
-    param([string]$Text, [int]$MatchIndex)
-    $lineStart = $Text.LastIndexOf("`n", [Math]::Max(0, $MatchIndex - 1))
-    if ($lineStart -lt 0) { $lineStart = 0 } else { $lineStart++ }
-    $open = $Text.IndexOf('{', $MatchIndex)
-    if ($open -lt 0) { return $Text }
-    $close = Find-MatchingBraceIndex -Text $Text -OpenIndex $open
-    if ($close -lt 0) { return $Text }
-    $end = $close + 1
-    while ($end -lt $Text.Length -and ($Text[$end] -eq "`r" -or $Text[$end] -eq "`n")) { $end++ }
-    return $Text.Remove($lineStart, $end - $lineStart)
-}
-
-function Remove-DuplicateCppDefinitions {
-    param([string]$File, [string[]]$Signatures, [switch]$KeepLast)
-    if (-not (Test-Path $File)) { return }
-    $text = Get-Content -Raw -Path $File
-    $changed = $false
-    foreach ($signature in $Signatures) {
-        while ($true) {
-            $first = $text.IndexOf($signature, [StringComparison]::Ordinal)
-            if ($first -lt 0) { break }
-            $next = $text.IndexOf($signature, $first + $signature.Length, [StringComparison]::Ordinal)
-            if ($next -lt 0) { break }
-            if ($KeepLast) {
-                Write-Host "Removing earlier duplicate definition '$signature' from $File"
-                $text = Remove-CppDefinitionRange -Text $text -MatchIndex $first
-            } else {
-                Write-Host "Removing later duplicate definition '$signature' from $File"
-                $text = Remove-CppDefinitionRange -Text $text -MatchIndex $next
-            }
-            $changed = $true
-        }
-    }
-    if ($changed) {
-        Set-Content -Path $File -Value $text -NoNewline
-    }
-}
-
-function Remove-ObsoleteCppDefinitions {
-    param([string]$File, [string[]]$QualifiedNames)
-    if (-not (Test-Path $File)) { return }
-    $text = Get-Content -Raw -Path $File
-    $changed = $false
-    foreach ($name in $QualifiedNames) {
-        while ($true) {
-            $idx = $text.IndexOf($name, [StringComparison]::Ordinal)
-            if ($idx -lt 0) { break }
-            Write-Host "Removing obsolete definition '$name' from $File"
-            $text = Remove-CppDefinitionRange -Text $text -MatchIndex $idx
-            $changed = $true
-        }
-    }
-    if ($changed) {
-        Set-Content -Path $File -Value $text -NoNewline
-    }
-}
-
-
-function Insert-BeforeMarker {
-    param([string]$Text, [string]$Marker, [string]$Insertion)
-    $idx = $Text.IndexOf($Marker, [StringComparison]::Ordinal)
-    if ($idx -lt 0) { return $Text + "`n" + $Insertion }
-    return $Text.Insert($idx, $Insertion + "`n")
-}
-
-function Ensure-TitleEditorCoreDefinitions {
-    param([string]$File)
-    if (-not (Test-Path $File)) { return }
-    $text = Get-Content -Raw -Path $File
-    $changed = $false
-
-    if ($text.IndexOf("void TitleEditor::on_title_modified()", [StringComparison]::Ordinal) -lt 0) {
-        Write-Host "Restoring missing TitleEditor::on_title_modified definition in $File"
-        $definition = @'
-void TitleEditor::on_title_modified()
-{
-    if (title_) setWindowTitle("OBS Titler Pro Editor  ·  modified");
-    if (canvas_) canvas_->refresh_preview();
-    if (title_props_) title_props_->set_title(title_);
-    if (timeline_) timeline_->set_title(title_);
-    push_undo_snapshot();
-    TitleDataStore::instance().notify_change();
-    TitleDataStore::instance().save();
-}
-'@
-        $text = Insert-BeforeMarker -Text $text -Marker "/* ══════════════════════════════════════════════════════════════════`n *  CanvasPreview" -Insertion $definition
-        $changed = $true
-    }
-
-    $canvasDefinitions = ""
-    if ($text.IndexOf("CanvasPreview::CanvasPreview(QWidget *parent)", [StringComparison]::Ordinal) -lt 0) {
-        Write-Host "Restoring missing CanvasPreview constructor in $File"
-        $canvasDefinitions += @'
-CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
-{
-    setMinimumSize(400, 225);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setStyleSheet("background:#111;");
-    setMouseTracking(true);
-}
-
-'@
-    }
-    if ($text.IndexOf("void CanvasPreview::set_title(std::shared_ptr<Title> t)", [StringComparison]::Ordinal) -lt 0) {
-        Write-Host "Restoring missing CanvasPreview::set_title definition in $File"
-        $canvasDefinitions += @'
-void CanvasPreview::set_title(std::shared_ptr<Title> t)
-{
-    title_ = t; dirty_ = true; update();
-}
-
-'@
-    }
-    if (-not [string]::IsNullOrEmpty($canvasDefinitions)) {
-        $text = Insert-BeforeMarker -Text $text -Marker "void CanvasPreview::set_playhead(double t)" -Insertion $canvasDefinitions.TrimEnd()
-        $changed = $true
-    }
-
-    if ($changed) {
-        Set-Content -Path $File -Value $text -NoNewline
-    }
-}
-
-function Repair-KnownMergeArtifacts {
-    param([string]$ScriptRoot)
-    $dock = Join-Path $ScriptRoot "src\title-dock.cpp"
-    $editor = Join-Path $ScriptRoot "src\title-editor.cpp"
-    Remove-DuplicateCppDefinitions -File $dock -Signatures @(
-        "void TitleDock::populate_exposed_text()",
-        "void TitleDock::on_add_live_text_row()",
-        "void TitleDock::on_move_live_text_row_up()",
-        "void TitleDock::on_move_live_text_row_down()",
-        "void TitleDock::select_title(const std::string &id)"
-    )
-    Remove-ObsoleteCppDefinitions -File $dock -QualifiedNames @(
-        "TitleDock::create_template_title",
-        "TitleDock::create_title_from_template"
-    )
-    # The known corrupted editor block was pasted before the valid coordinate
-    # helpers, so keep the last helper body if a duplicate survived restore.
-    Remove-DuplicateCppDefinitions -File $editor -KeepLast -Signatures @(
-        "QPointF CanvasPreview::canvas_to_view(const QPointF &canvas_pt) const",
-        "QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const",
-        "QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const"
-    )
-    Ensure-TitleEditorCoreDefinitions -File $editor
-}
-
 
 # Paths
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -213,32 +47,59 @@ $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
 Write-Host "=== Starting OBS Titler Pro build process ==="
 
-if ($RestoreTrackedSources) {
-    Write-Host "`n=== Restoring tracked source files from HEAD ==="
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-Error "-RestoreTrackedSources requires git to be available in PATH."
-        exit 1
-    }
-    $trackedSources = @(
-        "src/title-dock.cpp",
-        "src/title-dock.h",
-        "src/title-editor.cpp",
-        "src/title-editor.h"
+
+# Guard against accidental duplicate out-of-class bodies in large UI
+# translation units. MSVC reports these late during compilation, so fail early
+# with the exact repeated definitions that have previously broken Windows builds.
+function Assert-UniqueSourceDefinition {
+    param(
+        [string]$File,
+        [string[]]$Definitions
     )
-    & git -C $ScriptDir restore --source HEAD -- $trackedSources
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to restore tracked source files from HEAD."
+
+    if (-not (Test-Path $File)) {
+        Write-Error "Source file not found: $File"
         exit 1
     }
-    Repair-KnownMergeArtifacts -ScriptRoot $ScriptDir
+
+    $Text = Get-Content -Raw -Path $File
+    foreach ($Definition in $Definitions) {
+        $Count = ([regex]::Matches($Text, [regex]::Escape($Definition))).Count
+        if ($Count -gt 1) {
+            Write-Error "Duplicate definition detected in ${File}: '$Definition' appears $Count times. Remove the duplicate body before building."
+            exit 1
+        }
+    }
 }
 
+$TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
+Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
+    "void TitleEditor::keyPressEvent(",
+    "void CanvasPreview::set_safe_guides_visible(",
+    "void CanvasPreview::refresh_preview(",
+    "std::shared_ptr<Layer> CanvasPreview::selected_layer(",
+    "QRectF CanvasPreview::layer_local_rect(",
+    "double CanvasPreview::view_scale(",
+    "QPointF CanvasPreview::view_origin(",
+    "QPointF CanvasPreview::view_to_canvas(",
+    "QPointF CanvasPreview::canvas_to_view(",
+    "QPointF CanvasPreview::canvas_to_layer(",
+    "QPointF CanvasPreview::layer_to_canvas(",
+    "CanvasPreview::DragMode CanvasPreview::hit_test_selected(",
+    "void CanvasPreview::apply_drag(",
+    "void TimelineWidget::contextMenuEvent(",
+    "void TimelineWidget::wheelEvent(",
+    "TitlePropertiesPanel::TitlePropertiesPanel(",
+    "void TitlePropertiesPanel::set_title(",
+    "void TitlePropertiesPanel::load_values("
+)
 
-# MSVC is the authoritative duplicate-definition checker. Do not run an
-# additional source scanner here: previous scanner versions produced false
-# positives on valid CanvasPreview helper declarations/calls and blocked the
-# Windows build before compilation could start.
-
+$TitleDockSource = Join-Path $ScriptDir "src\title-dock.cpp"
+Assert-UniqueSourceDefinition -File $TitleDockSource -Definitions @(
+    "void TitleDock::select_title(",
+    "std::shared_ptr<Title> TitleDock::create_template_title(",
+    "void TitleDock::create_title_from_template("
+)
 
 # 1. Verify CMake and Visual Studio
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
@@ -308,12 +169,6 @@ if (-not (Test-ObsSdkDir $ObsSdkDir)) {
     exit 1
 }
 Write-Host "Found OBS SDK: $ObsSdkDir"
-
-if ($Clean -and (Test-Path $BuildDir)) {
-    Write-Host "`n=== Cleaning previous build directory ==="
-    Write-Host "Removing: $BuildDir"
-    Remove-Item -Recurse -Force $BuildDir
-}
 
 # 4. Configure CMake
 Write-Host "`n=== Configuring CMake ==="
