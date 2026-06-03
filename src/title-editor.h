@@ -31,9 +31,12 @@
 #include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QPushButton>
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QTimer>
+#include <QPoint>
+#include <vector>
 #include <memory>
 
 /* Forward declarations for sub-widgets */
@@ -75,6 +78,11 @@ private:
     void build_ui();
     void build_toolbar();
     void update_title_bar();
+    void push_undo_snapshot();
+    void undo();
+    void redo();
+    void update_undo_actions();
+    void restore_title_snapshot(const Title &snapshot);
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -94,6 +102,12 @@ private:
     QToolBar        *toolbar_   = nullptr;
     QAction         *act_play_  = nullptr;
     QAction         *act_rew_   = nullptr;
+    QAction         *act_undo_  = nullptr;
+    QAction         *act_redo_  = nullptr;
+    std::shared_ptr<Layer> copied_layer_;
+    std::vector<std::shared_ptr<Title>> undo_stack_;
+    int undo_index_ = -1;
+    bool restoring_undo_ = false;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -140,12 +154,16 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void refresh();
+    void set_layer_clipboard_available(bool available);
 
 signals:
     void layer_selected(const std::string &layer_id);
     void layer_visibility_changed(const std::string &layer_id, bool v);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
+    void clone_layer_requested(const std::string &layer_id);
+    void copy_layer_requested(const std::string &layer_id);
+    void paste_layer_requested();
     void delete_layer_requested(const std::string &layer_id);
 
 private slots:
@@ -157,9 +175,11 @@ private slots:
 
 private:
     void populate();
+    void show_context_menu(const QPoint &pos);
     std::string selected_id() const;
 
     std::shared_ptr<Title> title_;
+    bool          can_paste_layer_ = false;
     QListWidget  *list_     = nullptr;
     QPushButton  *btn_add_text_ = nullptr;
     QPushButton  *btn_add_rect_ = nullptr;
@@ -219,6 +239,7 @@ public:
     void set_title(std::shared_ptr<Title> t);
 
 signals:
+    void property_change_about_to_begin();
     void property_changed();
 
 private:
@@ -238,6 +259,16 @@ private:
     QSpinBox        *spn_size_     = nullptr;
     QCheckBox       *chk_bold_     = nullptr;
     QCheckBox       *chk_italic_   = nullptr;
+    QComboBox       *cmb_text_style_ = nullptr;
+    QPushButton     *btn_text_color_ = nullptr;
+    QGroupBox       *text_box_ = nullptr;
+    QGroupBox       *outline_box_ = nullptr;
+    QCheckBox       *chk_outline_enabled_ = nullptr;
+    QPushButton     *btn_outline_color_ = nullptr;
+    QDoubleSpinBox  *spn_outline_width_ = nullptr;
+    QDoubleSpinBox  *spn_outline_opacity_ = nullptr;
+    QComboBox       *cmb_outline_join_ = nullptr;
+    bool             loading_ = false;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;

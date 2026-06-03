@@ -276,9 +276,18 @@ static json layer_to_json(const Layer &l)
     j["font_size"]     = l.font_size;
     j["font_bold"]     = l.font_bold;
     j["font_italic"]   = l.font_italic;
+    j["text_all_caps"] = l.text_all_caps;
+    j["text_small_caps"] = l.text_small_caps;
+    j["text_superscript"] = l.text_superscript;
+    j["text_subscript"] = l.text_subscript;
     j["text_color"]    = l.text_color;
-    j["stroke_color"]  = l.stroke_color;
-    j["stroke_width"]  = l.stroke_width;
+    j["outline_enabled"] = l.outline_enabled;
+    j["outline_color"] = l.outline_color;
+    j["outline_thickness"] = l.outline_thickness;
+    j["outline_opacity"] = l.outline_opacity;
+    j["outline_join"] = (int)l.outline_join;
+    j["stroke_color"]  = l.outline_color;
+    j["stroke_width"]  = l.outline_thickness;
     j["align_h"]       = l.align_h;
     j["align_v"]       = l.align_v;
 
@@ -313,9 +322,18 @@ static std::shared_ptr<Layer> layer_from_json(const json &j)
     l->font_size     = j.value("font_size",     72);
     l->font_bold     = j.value("font_bold",     false);
     l->font_italic   = j.value("font_italic",   false);
+    l->text_all_caps = j.value("text_all_caps", false);
+    l->text_small_caps = j.value("text_small_caps", false);
+    l->text_superscript = j.value("text_superscript", false);
+    l->text_subscript = j.value("text_subscript", false);
     l->text_color    = j.value("text_color",    (uint32_t)0xFFFFFFFF);
-    l->stroke_color  = j.value("stroke_color",  (uint32_t)0x00000000);
-    l->stroke_width  = j.value("stroke_width",  0.0f);
+    l->outline_enabled = j.value("outline_enabled", j.contains("stroke_width") && j.value("stroke_width", 0.0f) > 0.0f);
+    l->outline_color = j.value("outline_color", j.value("stroke_color", (uint32_t)0x00000000));
+    l->outline_thickness = j.value("outline_thickness", j.value("stroke_width", 0.0f));
+    l->outline_opacity = j.value("outline_opacity", 1.0f);
+    l->outline_join = (OutlineJoinStyle)j.value("outline_join", (int)OutlineJoinStyle::Round);
+    l->stroke_color  = l->outline_color;
+    l->stroke_width  = l->outline_thickness;
     l->align_h       = j.value("align_h",       1);
     l->align_v       = j.value("align_v",       1);
 
