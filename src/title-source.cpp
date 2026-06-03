@@ -26,16 +26,52 @@
 #include <QFont>
 #include <QColor>
 
+#include <QString>
+#include <QLocale>
+
 #include <memory>
 #include <string>
 #include <cstring>
 #include <cmath>
 #include <chrono>
-#include <vector>
 #include <algorithm>
+#include <cctype>
+#include <vector>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
+
+static QString locale_uppercase_visual(QString text)
+{
+    const QLocale locale = QLocale::system();
+    if (locale.language() == QLocale::Turkish) {
+        text.replace(QStringLiteral("i"), QStringLiteral("İ"));
+        text.replace(QStringLiteral("ı"), QStringLiteral("I"));
+    }
+    text.replace(QStringLiteral("ß"), QStringLiteral("SS"));
+    QString upper = text.toUpper();
+    upper.replace(QStringLiteral("Ά"), QStringLiteral("Α"));
+    upper.replace(QStringLiteral("Έ"), QStringLiteral("Ε"));
+    upper.replace(QStringLiteral("Ή"), QStringLiteral("Η"));
+    upper.replace(QStringLiteral("Ί"), QStringLiteral("Ι"));
+    upper.replace(QStringLiteral("Ό"), QStringLiteral("Ο"));
+    upper.replace(QStringLiteral("Ύ"), QStringLiteral("Υ"));
+    upper.replace(QStringLiteral("Ώ"), QStringLiteral("Ω"));
+    upper.replace(QStringLiteral("ΐ"), QStringLiteral("Ϊ"));
+    upper.replace(QStringLiteral("ΰ"), QStringLiteral("Ϋ"));
+    upper.replace(QStringLiteral("ẞ"), QStringLiteral("SS"));
+    return upper;
+}
+
+static cairo_line_join_t outline_join_to_cairo(OutlineJoinStyle join)
+{
+    switch (join) {
+    case OutlineJoinStyle::Miter: return CAIRO_LINE_JOIN_MITER;
+    case OutlineJoinStyle::Bevel: return CAIRO_LINE_JOIN_BEVEL;
+    case OutlineJoinStyle::Round:
+    default: return CAIRO_LINE_JOIN_ROUND;
+    }
+}
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -291,8 +327,70 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
-    cairo_paint_with_alpha(cr, alpha);
+    /* Build Pango layout */
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+
+    /* Font */
+    PangoFontDescription *fdesc =
+        pango_font_description_from_string(layer.font_family.c_str());
+    int font_size = layer.font_size;
+    if (layer.text_superscript || layer.text_subscript)
+        font_size = std::max(1, (int)std::round(font_size * 0.65));
+    pango_font_description_set_size(fdesc,
+        font_size * PANGO_SCALE);
+    if (layer.font_bold)
+        pango_font_description_set_weight(fdesc, PANGO_WEIGHT_BOLD);
+    if (layer.font_italic)
+        pango_font_description_set_style(fdesc, PANGO_STYLE_ITALIC);
+    if (layer.text_small_caps)
+        pango_font_description_set_variant(fdesc, PANGO_VARIANT_SMALL_CAPS);
+    pango_layout_set_font_description(layout, fdesc);
+    pango_font_description_free(fdesc);
+
+    QString visual_text = QString::fromStdString(layer.text_content);
+    if (layer.text_all_caps)
+        visual_text = locale_uppercase_visual(visual_text);
+    const std::string display_text = visual_text.toStdString();
+    pango_layout_set_text(layout, display_text.c_str(), -1);
+    pango_layout_set_width(layout, canvas_w * PANGO_SCALE);
+
+    /* Horizontal alignment */
+    PangoAlignment palign = PANGO_ALIGN_CENTER;
+    if (layer.align_h == 0) palign = PANGO_ALIGN_LEFT;
+    if (layer.align_h == 2) palign = PANGO_ALIGN_RIGHT;
+    pango_layout_set_alignment(layout, palign);
+
+    /* Measure for vertical offset */
+    int pw, ph;
+    pango_layout_get_pixel_size(layout, &pw, &ph);
+
+    double off_y = 0.0;
+    if (layer.align_v == 1) off_y = -ph / 2.0;
+    if (layer.align_v == 2) off_y = -(double)ph;
+    if (layer.text_superscript) off_y -= ph * 0.35;
+    if (layer.text_subscript) off_y += ph * 0.35;
+    double off_x = -(double)canvas_w / 2.0;  /* layout width = canvas_w */
+
+    cairo_translate(cr, off_x, off_y);
+
+    /* Outline */
+    if (layer.outline_enabled && layer.outline_thickness > 0.01f) {
+        double sr, sg, sb, sa;
+        unpack_color(layer.outline_color, sr, sg, sb, sa);
+        cairo_set_source_rgba(cr, sr, sg, sb, sa * layer.outline_opacity * alpha);
+        cairo_set_line_width(cr, layer.outline_thickness * 2.0);
+        cairo_set_line_join(cr, outline_join_to_cairo(layer.outline_join));
+        pango_cairo_layout_path(cr, layout);
+        cairo_stroke(cr);
+    }
+
+    /* Fill */
+    double fr, fg, fb, fa;
+    unpack_color(layer.text_color, fr, fg, fb, fa);
+    cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
+    pango_cairo_show_layout(cr, layout);
+
+    g_object_unref(layout);
     cairo_restore(cr);
 
     cairo_surface_destroy(text_surface);
@@ -366,7 +464,17 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
         cairo_rectangle(cr, 0, 0, w, h);
     }
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
-    cairo_fill(cr);
+    if (layer.outline_enabled && layer.outline_thickness > 0.01f) {
+        cairo_fill_preserve(cr);
+        double sr, sg, sb, sa;
+        unpack_color(layer.outline_color, sr, sg, sb, sa);
+        cairo_set_source_rgba(cr, sr, sg, sb, sa * layer.outline_opacity * alpha);
+        cairo_set_line_width(cr, layer.outline_thickness);
+        cairo_set_line_join(cr, outline_join_to_cairo(layer.outline_join));
+        cairo_stroke(cr);
+    } else {
+        cairo_fill(cr);
+    }
     cairo_restore(cr);
 }
 

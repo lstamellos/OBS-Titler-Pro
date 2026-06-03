@@ -81,6 +81,12 @@ enum class LayerType {
     Shape,      /* future: polygon / ellipse */
 };
 
+enum class OutlineJoinStyle {
+    Miter = 0,
+    Round = 1,
+    Bevel = 2
+};
+
 /* ══════════════════════════════════════════════════════════════════
  *  Layer
  * ══════════════════════════════════════════════════════════════════ */
@@ -112,9 +118,18 @@ struct Layer {
     int         font_size     = 72;
     bool        font_bold     = false;
     bool        font_italic   = false;
+    bool        text_all_caps = false;
+    bool        text_small_caps = false;
+    bool        text_superscript = false;
+    bool        text_subscript = false;
     uint32_t    text_color    = 0xFFFFFFFF;  /* ARGB */
-    uint32_t    stroke_color  = 0x00000000;
-    float       stroke_width  = 0.0f;
+    bool        outline_enabled = false;
+    uint32_t    outline_color = 0xFF000000;
+    float       outline_thickness = 0.0f;
+    float       outline_opacity = 1.0f;
+    OutlineJoinStyle outline_join = OutlineJoinStyle::Round;
+    uint32_t    stroke_color  = 0x00000000; /* legacy alias for outline_color */
+    float       stroke_width  = 0.0f;       /* legacy alias for outline_thickness */
     int         align_h       = 1;  /* 0=left 1=center 2=right */
     int         align_v       = 1;  /* 0=top  1=middle 2=bottom */
 
