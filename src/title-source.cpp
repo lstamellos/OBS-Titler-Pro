@@ -19,6 +19,12 @@
 
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
+#include <QImage>
+#include <QString>
+#include <QPointF>
+#include <QPainter>
+#include <QFont>
+#include <QColor>
 
 #include <QString>
 #include <QLocale>
@@ -80,9 +86,14 @@ struct TitleSourceData {
     float       speed        = 1.0f;
     bool        auto_advance = false;  /* future: playlist mode */
 
+    enum class CuePhase { FreeRun, IntroLoop, OutroThenIntro };
+
     /* Playback state */
     double      playhead     = 0.0;    /* seconds */
     bool        playing      = true;
+    bool        playback_reverse = false;
+    uint64_t    seen_cue_revision = 0;
+    CuePhase    cue_phase    = CuePhase::FreeRun;
     std::chrono::steady_clock::time_point last_tick;
     bool        first_tick   = true;
 
@@ -96,7 +107,28 @@ struct TitleSourceData {
 
     /* Dirty flag – avoid re-uploading unchanged frames */
     bool dirty = true;
+    uint64_t seen_store_revision = 0;
 };
+
+
+static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared_ptr<Title> &title)
+{
+    std::vector<std::shared_ptr<Layer>> exposed;
+    if (!title) return exposed;
+    for (const auto &layer : title->layers) {
+        if (layer->type == LayerType::Text && layer->expose_text)
+            exposed.push_back(layer);
+    }
+    return exposed;
+}
+
+static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
+{
+    if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
+    auto exposed = exposed_text_layers(title);
+    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col)
+        exposed[col]->text_content = title->live_text_rows[row][col];
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  Helper: ARGB uint32 → r,g,b,a doubles (0..1)
@@ -110,18 +142,186 @@ static void unpack_color(uint32_t c,
     b = ((c >>  0) & 0xFF) / 255.0;
 }
 
+
+static double eval_box_width(const Layer &layer, double t)
+{
+    return std::max(1.0, layer.box_width.is_animated()
+                         ? layer.box_width.evaluate(t)
+                         : (double)layer.rect_width);
+}
+
+static double eval_box_height(const Layer &layer, double t)
+{
+    return std::max(1.0, layer.box_height.is_animated()
+                         ? layer.box_height.evaluate(t)
+                         : (double)layer.rect_height);
+}
+
+static double eval_origin_x(const Layer &layer, double t)
+{
+    return std::clamp(layer.origin_x_prop.is_animated()
+                          ? layer.origin_x_prop.evaluate(t)
+                          : (double)layer.origin_x,
+                      0.0, 1.0);
+}
+
+static double eval_origin_y(const Layer &layer, double t)
+{
+    return std::clamp(layer.origin_y_prop.is_animated()
+                          ? layer.origin_y_prop.evaluate(t)
+                          : (double)layer.origin_y,
+                      0.0, 1.0);
+}
+
+static int eval_channel(const AnimatedProperty &prop, double fallback, double t)
+{
+    return (int)std::clamp(std::round(prop.is_animated() ? prop.evaluate(t) : fallback),
+                           0.0, 255.0);
+}
+
+static uint32_t eval_text_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.text_color_a, (layer.text_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.text_color_r, (layer.text_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.text_color_g, (layer.text_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.text_color_b, layer.text_color & 0xFF, t);
+}
+
+static uint32_t eval_fill_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.fill_color_a, (layer.fill_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.fill_color_r, (layer.fill_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.fill_color_g, (layer.fill_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
+}
+
+static bool eval_shadow_enabled(const Layer &layer, double t)
+{
+    return layer.shadow_enabled_prop.is_animated()
+        ? layer.shadow_enabled_prop.evaluate(t) >= 0.5
+        : layer.shadow_enabled;
+}
+
+static double eval_shadow_opacity(const Layer &layer, double t)
+{
+    return std::clamp(layer.shadow_opacity_prop.is_animated() ? layer.shadow_opacity_prop.evaluate(t) : (double)layer.shadow_opacity, 0.0, 1.0);
+}
+
+static double eval_shadow_distance(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_distance_prop.is_animated() ? layer.shadow_distance_prop.evaluate(t) : (double)layer.shadow_distance);
+}
+
+static double eval_shadow_angle(const Layer &layer, double t)
+{
+    return layer.shadow_angle_prop.is_animated() ? layer.shadow_angle_prop.evaluate(t) : (double)layer.shadow_angle;
+}
+
+static double eval_shadow_blur(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_blur_prop.is_animated() ? layer.shadow_blur_prop.evaluate(t) : (double)layer.shadow_blur);
+}
+
+static double eval_shadow_spread(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.shadow_spread_prop.is_animated() ? layer.shadow_spread_prop.evaluate(t) : (double)layer.shadow_spread);
+}
+
+static uint32_t eval_shadow_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.shadow_color_a, (layer.shadow_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.shadow_color_r, (layer.shadow_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.shadow_color_g, (layer.shadow_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.shadow_color_b, layer.shadow_color & 0xFF, t);
+}
+
+static QPointF shadow_offset(const Layer &layer, double t)
+{
+    double radians = eval_shadow_angle(layer, t) * kPi / 180.0;
+    double distance = eval_shadow_distance(layer, t);
+    return QPointF(std::cos(radians) * distance,
+                   std::sin(radians) * distance);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  Cairo rendering
  * ══════════════════════════════════════════════════════════════════ */
+static QColor color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xFF,
+                  (argb >> 8) & 0xFF,
+                  argb & 0xFF,
+                  (argb >> 24) & 0xFF);
+}
+
 static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
                                int canvas_w, int canvas_h)
 {
+    (void)canvas_w;
+    (void)canvas_h;
+
     double px = layer.pos_x.evaluate(t);
     double py = layer.pos_y.evaluate(t);
     double sx = layer.scale_x.evaluate(t);
     double sy = layer.scale_y.evaluate(t);
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
+    double box_w = std::max(1.0, eval_box_width(layer, t));
+    double box_h = std::max(1.0, eval_box_height(layer, t));
+
+    QPointF off = shadow_offset(layer, t);
+    double blur = eval_shadow_blur(layer, t);
+    double spread = eval_shadow_spread(layer, t);
+    int pad = eval_shadow_enabled(layer, t)
+        ? (int)std::ceil(std::max(std::abs(off.x()), std::abs(off.y())) + blur + spread + 4.0)
+        : 0;
+    int img_w = std::max(1, (int)std::ceil(box_w) + pad * 2);
+    int img_h = std::max(1, (int)std::ceil(box_h) + pad * 2);
+    QImage text_image(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
+    text_image.fill(Qt::transparent);
+
+    QPainter painter(&text_image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    QFont font(QString::fromStdString(layer.font_family));
+    font.setPixelSize(layer.font_size);
+    font.setBold(layer.font_bold);
+    font.setItalic(layer.font_italic);
+    font.setKerning(true);
+    painter.setFont(font);
+
+    QRectF text_rect(pad, pad, box_w, box_h);
+    Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
+    if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
+    if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
+    if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
+    if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
+
+    if (eval_shadow_enabled(layer, t)) {
+        QColor shadow = color_from_argb(eval_shadow_color(layer, t));
+        shadow.setAlphaF(std::clamp((double)shadow.alphaF() * eval_shadow_opacity(layer, t), 0.0, 1.0));
+        int passes = std::max(1, (int)std::ceil(blur / 3.0));
+        for (int pass = passes; pass >= 1; --pass) {
+            QColor pass_color = shadow;
+            pass_color.setAlphaF(shadow.alphaF() / passes);
+            painter.setPen(pass_color);
+            double radius = blur * pass / passes;
+            for (double dx : {-spread - radius, 0.0, spread + radius})
+                for (double dy : {-spread - radius, 0.0, spread + radius})
+                    painter.drawText(text_rect.translated(off + QPointF(dx, dy)), align, QString::fromStdString(layer.text_content));
+        }
+    }
+
+    QColor fill = color_from_argb(eval_text_color(layer, t));
+    fill.setAlphaF(std::clamp((double)fill.alphaF(), 0.0, 1.0));
+    painter.setPen(fill);
+    painter.drawText(text_rect, align, QString::fromStdString(layer.text_content));
+    painter.end();
+
+    cairo_surface_t *text_surface = cairo_image_surface_create_for_data(
+        text_image.bits(), CAIRO_FORMAT_ARGB32,
+        text_image.width(), text_image.height(), text_image.bytesPerLine());
 
     cairo_save(cr);
     cairo_translate(cr, px, py);
@@ -192,6 +392,8 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
 
     g_object_unref(layout);
     cairo_restore(cr);
+
+    cairo_surface_destroy(text_surface);
 }
 
 static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
@@ -203,16 +405,53 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     double rot = layer.rotation.evaluate(t) * kPi / 180.0;
     double alpha = layer.opacity.evaluate(t);
 
-    double w = layer.rect_width  * sx;
-    double h = layer.rect_height * sy;
-    double r = layer.corner_radius;
+    double w = eval_box_width(layer, t);
+    double h = eval_box_height(layer, t);
+    double r = std::min<double>(layer.corner_radius, std::min(w, h) / 2.0);
+    double x = -eval_origin_x(layer, t) * w;
+    double y = -eval_origin_y(layer, t) * h;
+    QPointF off = shadow_offset(layer, t);
+    double blur = eval_shadow_blur(layer, t);
+    double spread = eval_shadow_spread(layer, t);
 
     double fr, fg, fb, fa;
-    unpack_color(layer.fill_color, fr, fg, fb, fa);
+    unpack_color(eval_fill_color(layer, t), fr, fg, fb, fa);
 
     cairo_save(cr);
-    cairo_translate(cr, px - w / 2.0, py - h / 2.0);
+    cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
+    cairo_scale(cr, sx, sy);
+    cairo_translate(cr, x, y);
+
+    if (eval_shadow_enabled(layer, t)) {
+        double sr, sg, sb, sa;
+        unpack_color(eval_shadow_color(layer, t), sr, sg, sb, sa);
+        int passes = std::max(1, (int)std::ceil(blur / 3.0));
+        for (int pass = passes; pass >= 1; --pass) {
+            double radius = blur * pass / passes;
+            double grow = spread + radius;
+            double sx0 = -grow;
+            double sy0 = -grow;
+            double sw = w + grow * 2.0;
+            double sh = h + grow * 2.0;
+            double sradius = std::max(0.0, r + grow);
+            cairo_save(cr);
+            cairo_translate(cr, off.x(), off.y());
+            if (sradius > 0.0) {
+                cairo_new_sub_path(cr);
+                cairo_arc(cr, sx0 + sradius,      sy0 + sradius,      sradius, kPi,     3*kPi/2);
+                cairo_arc(cr, sx0 + sw - sradius, sy0 + sradius,      sradius, 3*kPi/2, 2*kPi);
+                cairo_arc(cr, sx0 + sw - sradius, sy0 + sh - sradius, sradius, 0,       kPi/2);
+                cairo_arc(cr, sx0 + sradius,      sy0 + sh - sradius, sradius, kPi/2,   kPi);
+                cairo_close_path(cr);
+            } else {
+                cairo_rectangle(cr, sx0, sy0, sw, sh);
+            }
+            cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_shadow_opacity(layer, t) / passes);
+            cairo_fill(cr);
+            cairo_restore(cr);
+        }
+    }
 
     if (r > 0.0) {
         cairo_new_sub_path(cr);
@@ -224,7 +463,6 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     } else {
         cairo_rectangle(cr, 0, 0, w, h);
     }
-
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
     if (layer.outline_enabled && layer.outline_thickness > 0.01f) {
         cairo_fill_preserve(cr);
@@ -238,6 +476,42 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
         cairo_fill(cr);
     }
     cairo_restore(cr);
+}
+
+
+static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
+{
+    if (layer.image_path.empty()) return;
+
+    QImage image(QString::fromStdString(layer.image_path));
+    if (image.isNull()) return;
+
+    QImage argb = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+    double px = layer.pos_x.evaluate(t);
+    double py = layer.pos_y.evaluate(t);
+    double sx = layer.scale_x.evaluate(t);
+    double sy = layer.scale_y.evaluate(t);
+    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
+    double alpha = layer.opacity.evaluate(t);
+    double w = eval_box_width(layer, t);
+    double h = eval_box_height(layer, t);
+
+    cairo_surface_t *img_surface = cairo_image_surface_create_for_data(
+        argb.bits(), CAIRO_FORMAT_ARGB32,
+        argb.width(), argb.height(), argb.bytesPerLine());
+
+    cairo_save(cr);
+    cairo_translate(cr, px, py);
+    cairo_rotate(cr, rot);
+    cairo_scale(cr, sx * (w / argb.width()), sy * (h / argb.height()));
+    cairo_set_source_surface(cr, img_surface,
+                             -eval_origin_x(layer, t) * argb.width(),
+                             -eval_origin_y(layer, t) * argb.height());
+    cairo_paint_with_alpha(cr, alpha);
+    cairo_restore(cr);
+
+    cairo_surface_destroy(img_surface);
 }
 
 /* Composite a full title frame into pixel_buf */
@@ -290,6 +564,9 @@ static void render_title_frame(TitleSourceData *data,
         case LayerType::SolidRect:
             render_layer_rect(cr, *layer, lt);
             break;
+        case LayerType::Image:
+            render_layer_image(cr, *layer, lt);
+            break;
         default:
             break;
         }
@@ -314,7 +591,7 @@ static void render_title_frame(TitleSourceData *data,
  * ══════════════════════════════════════════════════════════════════ */
 static const char *source_get_name(void *)
 {
-    return "Title";
+    return "OBS Titler Pro";
 }
 
 static void *source_create(obs_data_t *settings, obs_source_t *source)
@@ -344,6 +621,8 @@ static void source_update(void *priv, obs_data_t *settings)
     data->loop     = obs_data_get_bool(settings,   PROP_LOOP);
     data->speed    = (float)obs_data_get_double(settings, PROP_SPEED);
     data->playhead = 0.0;
+    data->playback_reverse = false;
+    data->playing = true;
     data->dirty    = true;
 }
 
@@ -369,16 +648,122 @@ static void source_video_tick(void *priv, float seconds)
     auto title = TitleDataStore::instance().get_title(data->title_id);
     if (!title) return;
 
-    if (data->playing) {
-        data->playhead += (double)seconds * data->speed;
-        if (data->playhead >= title->duration) {
-            if (data->loop) {
-                data->playhead = std::fmod(data->playhead, title->duration);
+    if (title->cue_revision != data->seen_cue_revision) {
+        double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
+        double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
+        bool has_pending = title->pending_cue_row >= 0 &&
+                           title->pending_cue_row < (int)title->live_text_rows.size();
+        if (title->playback_mode == 1) {
+            if (has_pending) {
+                data->playhead = loop_end;
+                data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
             } else {
+                data->playhead = 0.0;
+                data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+            }
+        } else if (title->playback_mode == 2 && has_pending) {
+            data->playhead = pause_time;
+            data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
+        } else {
+            if (has_pending) {
+                apply_live_text_row(title, title->pending_cue_row);
+                title->current_cue_row = title->pending_cue_row;
+                title->pending_cue_row = -1;
+                TitleDataStore::instance().touch_runtime_change();
+            }
+            data->playhead = 0.0;
+            data->cue_phase = TitleSourceData::CuePhase::FreeRun;
+        }
+        data->seen_cue_revision = title->cue_revision;
+        data->playback_reverse = false;
+        data->playing = true;
+        data->dirty = true;
+    }
+
+    if (data->playing) {
+        double dt = (double)seconds * data->speed;
+        double duration = std::max(0.001, title->duration);
+        double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
+        double loop_end = std::clamp(title->loop_end, loop_start, title->duration);
+
+        const bool ping_pong_loop = title->playback_mode == 1 && title->loop_type == 1 &&
+                                    (data->cue_phase == TitleSourceData::CuePhase::FreeRun ||
+                                     data->cue_phase == TitleSourceData::CuePhase::IntroLoop);
+        if (ping_pong_loop) {
+            data->playhead += data->playback_reverse ? -dt : dt;
+        } else {
+            data->playhead += dt;
+        }
+
+        if (data->cue_phase == TitleSourceData::CuePhase::IntroLoop && loop_end > loop_start) {
+            double loop_len = std::max(0.001, loop_end - loop_start);
+            if (title->loop_type == 1) {
+                if (!data->playback_reverse && data->playhead >= loop_end) {
+                    data->playhead = loop_end - std::fmod(data->playhead - loop_end, loop_len);
+                    data->playback_reverse = true;
+                } else if (data->playback_reverse && data->playhead <= loop_start) {
+                    data->playhead = loop_start + std::fmod(loop_start - data->playhead, loop_len);
+                    data->playback_reverse = false;
+                }
+            } else if (data->playhead >= loop_end) {
+                data->playhead = loop_start + std::fmod(data->playhead - loop_start, loop_len);
+            }
+        } else if (data->cue_phase == TitleSourceData::CuePhase::OutroThenIntro &&
+                   data->playhead >= title->duration) {
+            double next_intro_time = std::max(0.0, data->playhead - title->duration);
+            if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
+                apply_live_text_row(title, title->pending_cue_row);
+                title->current_cue_row = title->pending_cue_row;
+                title->pending_cue_row = -1;
+                TitleDataStore::instance().touch_runtime_change();
+            }
+            if (title->playback_mode == 1) {
+                if (loop_end > loop_start && next_intro_time >= loop_end) {
+                    next_intro_time = loop_start + std::fmod(next_intro_time - loop_start,
+                                                             std::max(0.001, loop_end - loop_start));
+                }
+                data->playhead = std::clamp(next_intro_time, 0.0, title->duration);
+                data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+            } else {
+                data->playhead = 0.0;
+                data->cue_phase = TitleSourceData::CuePhase::FreeRun;
+            }
+            data->playback_reverse = false;
+        } else if (data->cue_phase == TitleSourceData::CuePhase::FreeRun) {
+            if (title->playback_mode == 1) {
+                double loop_len = std::max(0.001, loop_end - loop_start);
+                if (loop_end <= loop_start + 0.0001) {
+                    if (data->playhead >= title->duration)
+                        data->playhead = std::fmod(data->playhead, duration);
+                } else if (title->loop_type == 1) {
+                    if (!data->playback_reverse && data->playhead >= loop_end) {
+                        data->playhead = loop_end - std::fmod(data->playhead - loop_end, loop_len);
+                        data->playback_reverse = true;
+                    } else if (data->playback_reverse && data->playhead <= loop_start) {
+                        data->playhead = loop_start + std::fmod(loop_start - data->playhead, loop_len);
+                        data->playback_reverse = false;
+                    }
+                } else if (data->playhead >= loop_end) {
+                    data->playhead = loop_start + std::fmod(data->playhead - loop_end, loop_len);
+                }
+            } else if (title->playback_mode == 2) {
+                double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
+                if (data->playhead >= pause_time) {
+                    data->playhead = pause_time;
+                    data->playing = false;
+                }
+            } else if (data->playhead >= title->duration) {
                 data->playhead = title->duration;
                 data->playing  = false;
             }
         }
+        data->dirty = true;
+    }
+
+
+    uint64_t revision = TitleDataStore::instance().revision();
+    if (revision != data->seen_store_revision) {
+        data->seen_store_revision = revision;
         data->dirty = true;
     }
 
@@ -448,5 +833,5 @@ void title_source_register()
     si.get_defaults   = source_get_defaults;
 
     obs_register_source(&si);
-    blog(LOG_INFO, "[obs-titles] Source type registered.");
+    blog(LOG_INFO, "[OBS Titler Pro] Source type registered.");
 }
