@@ -133,16 +133,18 @@ void TitleDock::build_ui()
     btn_scene_= new QPushButton("▶ Scene",  container_);
 
     btn_add_->setToolTip("New blank title");
+    btn_tpl_->setToolTip("Create a title from a Titler-style template");
     btn_dup_->setToolTip("Duplicate");
-    btn_rename_->setToolTip("Rename selected title");
+    btn_rename_->setToolTip("Rename selected title template");
     btn_del_->setToolTip("Delete");
-    btn_export_->setToolTip("Export selected title to a file");
-    btn_import_->setToolTip("Import a title file");
+    btn_export_->setToolTip("Export selected title template to a file");
+    btn_import_->setToolTip("Import a title template file");
     btn_edit_->setToolTip("Open title editor");
     btn_scene_->setToolTip("Add selected title to current scene");
 
     for (auto *b : {btn_add_, btn_dup_, btn_del_})
         b->setFixedWidth(28);
+    btn_tpl_->setFixedHeight(24);
     btn_rename_->setFixedHeight(24);
     btn_export_->setFixedHeight(24);
     btn_import_->setFixedHeight(24);
@@ -150,6 +152,7 @@ void TitleDock::build_ui()
     btn_scene_->setFixedHeight(24);
 
     toolbar->addWidget(btn_add_);
+    toolbar->addWidget(btn_tpl_);
     toolbar->addWidget(btn_import_);
     toolbar->addWidget(btn_dup_);
     toolbar->addWidget(btn_del_);
@@ -323,7 +326,7 @@ void TitleDock::on_selection_changed()
                     .arg(t->duration, 0, 'f', 1));
     } else {
         status_lbl_->setText(list_->count() == 0
-            ? "Click + to create a title"
+            ? "Click + or Templates to create a title"
             : "No title selected");
     }
     populate_exposed_text();
@@ -518,19 +521,117 @@ void TitleDock::select_title(const std::string &id)
     }
 }
 
-void TitleDock::on_add_template_lower_third()
+std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
+                                                         int template_id)
 {
-    on_add();
+    auto title = TitleDataStore::instance().create_title(name);
+    title->layers.clear();
+    title->bg_color = 0x00000000;
+    title->duration = 7.0;
+
+    auto add_rect = [&](const std::string &layer_name,
+                        double x, double y, float w, float h,
+                        uint32_t color, float radius = 0.0f) {
+        auto layer = std::make_shared<Layer>();
+        layer->id = TitleDataStore::make_uuid();
+        layer->name = layer_name;
+        layer->type = LayerType::SolidRect;
+        layer->pos_x.static_value = x;
+        layer->pos_y.static_value = y;
+        layer->rect_width = w;
+        layer->rect_height = h;
+        layer->box_width.static_value = w;
+        layer->box_height.static_value = h;
+        layer->corner_radius = radius;
+        layer->fill_color = color;
+        layer->fill_color_a.static_value = (color >> 24) & 0xFF;
+        layer->fill_color_r.static_value = (color >> 16) & 0xFF;
+        layer->fill_color_g.static_value = (color >> 8) & 0xFF;
+        layer->fill_color_b.static_value = color & 0xFF;
+        layer->out_time = title->duration;
+        title->layers.push_back(layer);
+        return layer;
+    };
+
+    auto add_text = [&](const std::string &layer_name,
+                        const std::string &text,
+                        double x, double y, int size,
+                        uint32_t color, bool bold = false,
+                        int align_h = 1, int align_v = 1) {
+        auto layer = std::make_shared<Layer>();
+        layer->id = TitleDataStore::make_uuid();
+        layer->name = layer_name;
+        layer->type = LayerType::Text;
+        layer->text_content = text;
+        layer->expose_text = true;
+        layer->font_family = "Arial";
+        layer->font_size = size;
+        layer->font_bold = bold;
+        layer->text_color = color;
+        layer->text_color_a.static_value = (color >> 24) & 0xFF;
+        layer->text_color_r.static_value = (color >> 16) & 0xFF;
+        layer->text_color_g.static_value = (color >> 8) & 0xFF;
+        layer->text_color_b.static_value = color & 0xFF;
+        layer->rect_width = 960.0f;
+        layer->rect_height = 160.0f;
+        layer->box_width.static_value = layer->rect_width;
+        layer->box_height.static_value = layer->rect_height;
+        layer->pos_x.static_value = x;
+        layer->pos_y.static_value = y;
+        layer->align_h = align_h;
+        layer->align_v = align_v;
+        layer->out_time = title->duration;
+        title->layers.push_back(layer);
+        return layer;
+    };
+
+    switch (template_id) {
+    case 1: /* Lower third */
+        title->duration = 8.0;
+        add_rect("Lower Third Backplate", 640, 835, 1120, 155, 0xD0161B24, 18.0f);
+        add_rect("Accent Bar", 120, 835, 18, 155, 0xFF00A3FF, 9.0f);
+        add_text("Name", name, 670, 800, 58, 0xFFFFFFFF, true, 0, 1);
+        add_text("Subtitle", "Subtitle / role", 670, 872, 34, 0xFFE8E8E8, false, 0, 1);
+        break;
+    case 2: /* Center title */
+        title->duration = 6.0;
+        add_rect("Soft Panel", 960, 540, 1280, 270, 0xB0101018, 28.0f);
+        add_rect("Top Accent", 960, 395, 520, 10, 0xFF00A3FF, 5.0f);
+        add_text("Main Title", name, 960, 505, 86, 0xFFFFFFFF, true, 1, 1);
+        add_text("Subtitle", "Editable subtitle", 960, 610, 42, 0xFFE0E0E0, false, 1, 1);
+        break;
+    case 3: /* Ticker / strap */
+        title->duration = 12.0;
+        add_rect("Ticker Background", 960, 1010, 1920, 110, 0xE0101010, 0.0f);
+        add_rect("Ticker Accent", 125, 1010, 250, 110, 0xFF0078D4, 0.0f);
+        add_text("Ticker Label", "LIVE", 125, 1010, 44, 0xFFFFFFFF, true, 1, 1);
+        add_text("Ticker Text", name, 1030, 1010, 44, 0xFFFFFFFF, false, 0, 1);
+        break;
+    default:
+        add_text("Title Text", name, 960, 540, 72, 0xFFFFFFFF, true, 1, 1);
+        break;
+    }
+
+    for (auto &layer : title->layers)
+        layer->out_time = title->duration;
+
+    TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().save();
+    return title;
 }
 
-void TitleDock::on_add_template_center_title()
+void TitleDock::create_title_from_template(const std::string &default_name,
+                                           int template_id)
 {
-    on_add();
-}
+    bool ok = false;
+    QString name = QInputDialog::getText(
+        this, "New Template Title", "Title text:", QLineEdit::Normal,
+        QString::fromStdString(default_name), &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
 
-void TitleDock::on_add_template_ticker()
-{
-    on_add();
+    auto title = create_template_title(name.trimmed().toStdString(), template_id);
+    select_title(title->id);
+    on_edit();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -547,6 +648,21 @@ void TitleDock::on_add()
     TitleDataStore::instance().save();
     select_title(title->id);
     on_edit();
+}
+
+void TitleDock::on_add_template_lower_third()
+{
+    create_title_from_template("Speaker Name", 1);
+}
+
+void TitleDock::on_add_template_center_title()
+{
+    create_title_from_template("Program Title", 2);
+}
+
+void TitleDock::on_add_template_ticker()
+{
+    create_title_from_template("Breaking news headline goes here", 3);
 }
 
 void TitleDock::on_duplicate()
@@ -600,7 +716,7 @@ void TitleDock::on_export()
 
     QString path = QFileDialog::getSaveFileName(
         this, "Export Title Template", safe_name + QStringLiteral(".otpt"),
-        "OBS Titler Pro Title Files (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
+        "OBS Titler Pro Templates (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
     if (path.isEmpty()) return;
 
     if (QFileInfo(path).suffix().isEmpty())
@@ -620,7 +736,7 @@ void TitleDock::on_import()
 {
     QString path = QFileDialog::getOpenFileName(
         this, "Import Title Template", QString(),
-        "OBS Titler Pro Title Files (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
+        "OBS Titler Pro Templates (*.otpt *.json);;JSON Files (*.json);;All Files (*)");
     if (path.isEmpty()) return;
 
     std::string error;

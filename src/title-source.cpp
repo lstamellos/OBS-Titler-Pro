@@ -22,7 +22,6 @@
 #include <QImage>
 #include <QString>
 #include <QPointF>
-#include <QRectF>
 #include <QPainter>
 #include <QFont>
 #include <QColor>
@@ -32,9 +31,8 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
-#include <algorithm>
-#include <cctype>
 #include <vector>
+#include <algorithm>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -220,52 +218,6 @@ static QColor color_from_argb(uint32_t argb)
                   (argb >> 24) & 0xFF);
 }
 
-
-static QString styled_text_for_layer(const Layer &layer)
-{
-    QString text = QString::fromStdString(layer.text_content);
-    return layer.text_all_caps ? text.toUpper() : text;
-}
-
-static void apply_text_style_to_font(QFont &font, const Layer &layer)
-{
-    font.setBold(layer.font_bold);
-    font.setItalic(layer.font_italic);
-    font.setUnderline(layer.text_underline);
-    font.setStrikeOut(layer.text_strikeout);
-    font.setCapitalization(layer.text_small_caps ? QFont::SmallCaps : QFont::MixedCase);
-    if (layer.text_superscript || layer.text_subscript)
-        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
-}
-
-static QRectF text_style_rect(QRectF rect, const Layer &layer)
-{
-    if (layer.text_superscript)
-        rect.translate(0.0, -rect.height() * 0.18);
-    else if (layer.text_subscript)
-        rect.translate(0.0, rect.height() * 0.18);
-    return rect;
-}
-
-static void draw_text_with_outline(QPainter &painter, const QRectF &rect,
-                                   int alignment, const QString &text,
-                                   uint32_t outline_argb, double outline_width)
-{
-    QColor outline = color_from_argb(outline_argb);
-    if (outline_width > 0.0 && outline.alpha() > 0) {
-        painter.setPen(outline);
-        int radius = std::max(1, (int)std::ceil(outline_width));
-        for (int dx = -radius; dx <= radius; ++dx) {
-            for (int dy = -radius; dy <= radius; ++dy) {
-                if (dx == 0 && dy == 0) continue;
-                if (std::hypot((double)dx, (double)dy) > radius + 0.25) continue;
-                painter.drawText(rect.translated(dx, dy), alignment, text);
-            }
-        }
-    }
-}
-
-
 static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
                                int canvas_w, int canvas_h)
 {
@@ -298,12 +250,12 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
 
     QFont font(QString::fromStdString(layer.font_family));
     font.setPixelSize(layer.font_size);
-    apply_text_style_to_font(font, layer);
+    font.setBold(layer.font_bold);
+    font.setItalic(layer.font_italic);
     font.setKerning(true);
     painter.setFont(font);
 
-    QString display_text = styled_text_for_layer(layer);
-    QRectF text_rect = text_style_rect(QRectF(pad, pad, box_w, box_h), layer);
+    QRectF text_rect(pad, pad, box_w, box_h);
     Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
     if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
@@ -321,15 +273,14 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
             double radius = blur * pass / passes;
             for (double dx : {-spread - radius, 0.0, spread + radius})
                 for (double dy : {-spread - radius, 0.0, spread + radius})
-                    painter.drawText(text_rect.translated(off + QPointF(dx, dy)), align, display_text);
+                    painter.drawText(text_rect.translated(off + QPointF(dx, dy)), align, QString::fromStdString(layer.text_content));
         }
     }
 
     QColor fill = color_from_argb(eval_text_color(layer, t));
     fill.setAlphaF(std::clamp((double)fill.alphaF(), 0.0, 1.0));
-    draw_text_with_outline(painter, text_rect, align, display_text, layer.stroke_color, layer.stroke_width);
     painter.setPen(fill);
-    painter.drawText(text_rect, align, display_text);
+    painter.drawText(text_rect, align, QString::fromStdString(layer.text_content));
     painter.end();
 
     cairo_surface_t *text_surface = cairo_image_surface_create_for_data(
@@ -340,69 +291,8 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     cairo_translate(cr, px, py);
     cairo_rotate(cr, rot);
     cairo_scale(cr, sx, sy);
-    /* Build Pango layout */
-    PangoLayout *layout = pango_cairo_create_layout(cr);
-
-    /* Font */
-    PangoFontDescription *fdesc =
-        pango_font_description_from_string(layer.font_family.c_str());
-    int font_size = layer.font_size;
-    if (layer.text_superscript || layer.text_subscript)
-        font_size = std::max(1, (int)std::round(font_size * 0.65));
-    pango_font_description_set_size(fdesc,
-        font_size * PANGO_SCALE);
-    if (layer.font_bold)
-        pango_font_description_set_weight(fdesc, PANGO_WEIGHT_BOLD);
-    if (layer.font_italic)
-        pango_font_description_set_style(fdesc, PANGO_STYLE_ITALIC);
-    if (layer.text_small_caps)
-        pango_font_description_set_variant(fdesc, PANGO_VARIANT_SMALL_CAPS);
-    pango_layout_set_font_description(layout, fdesc);
-    pango_font_description_free(fdesc);
-
-    std::string display_text = layer.text_content;
-    if (layer.text_all_caps)
-        std::transform(display_text.begin(), display_text.end(), display_text.begin(),
-                       [](unsigned char ch) { return (char)std::toupper(ch); });
-    pango_layout_set_text(layout, display_text.c_str(), -1);
-    pango_layout_set_width(layout, canvas_w * PANGO_SCALE);
-
-    /* Horizontal alignment */
-    PangoAlignment palign = PANGO_ALIGN_CENTER;
-    if (layer.align_h == 0) palign = PANGO_ALIGN_LEFT;
-    if (layer.align_h == 2) palign = PANGO_ALIGN_RIGHT;
-    pango_layout_set_alignment(layout, palign);
-
-    /* Measure for vertical offset */
-    int pw, ph;
-    pango_layout_get_pixel_size(layout, &pw, &ph);
-
-    double off_y = 0.0;
-    if (layer.align_v == 1) off_y = -ph / 2.0;
-    if (layer.align_v == 2) off_y = -(double)ph;
-    if (layer.text_superscript) off_y -= ph * 0.35;
-    if (layer.text_subscript) off_y += ph * 0.35;
-    double off_x = -(double)canvas_w / 2.0;  /* layout width = canvas_w */
-
-    cairo_translate(cr, off_x, off_y);
-
-    /* Stroke */
-    if (layer.stroke_width > 0.01f) {
-        double sr, sg, sb, sa;
-        unpack_color(layer.stroke_color, sr, sg, sb, sa);
-        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha);
-        cairo_set_line_width(cr, layer.stroke_width * 2.0);
-        pango_cairo_layout_path(cr, layout);
-        cairo_stroke(cr);
-    }
-
-    /* Fill */
-    double fr, fg, fb, fa;
-    unpack_color(layer.text_color, fr, fg, fb, fa);
-    cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
-    pango_cairo_show_layout(cr, layout);
-
-    g_object_unref(layout);
+    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
+    cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
 
     cairo_surface_destroy(text_surface);
@@ -476,16 +366,7 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
         cairo_rectangle(cr, 0, 0, w, h);
     }
     cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
-    cairo_fill_preserve(cr);
-    if (layer.stroke_width > 0.0f && (layer.stroke_color >> 24) != 0) {
-        double srk_r, srk_g, srk_b, srk_a;
-        unpack_color(layer.stroke_color, srk_r, srk_g, srk_b, srk_a);
-        cairo_set_line_width(cr, layer.stroke_width);
-        cairo_set_source_rgba(cr, srk_r, srk_g, srk_b, srk_a * alpha);
-        cairo_stroke(cr);
-    } else {
-        cairo_new_path(cr);
-    }
+    cairo_fill(cr);
     cairo_restore(cr);
 }
 
